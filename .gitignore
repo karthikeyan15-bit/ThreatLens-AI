@@ -1,5 +1,6 @@
 .DS_Store
 __pycache__/
+**/__pycache__/
 *.py[cod]
 *.egg-info/
 dist/
@@ -7,8 +8,15 @@ build/
 .venv/
 venv/
 .env
-datasets/raw/*
-!datasets/raw/.gitkeep
+.env.local
+dataset*.db
+threatlens.db
+threat_intel_cache.db
+data_pipeline/raw/
+data_pipeline/processed/
+reports/*.html
 reports/*.pdf
-*.db-journal
 models/*.joblib
+pytest_cache/
+.pytest_cache/
+.DS_Store
