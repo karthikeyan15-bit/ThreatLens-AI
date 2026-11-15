@@ -6,10 +6,11 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
-from .llm_client import get_llm_client, TinyAyaClient
-from .planner import Indicator, InvestigationPlan, extract_indicators, plan_investigation
-from .response_generator import generate_risk_summary
-from ..database.db import (
+# Use absolute imports to work correctly on Hugging Face Spaces
+from agents.llm_client import get_llm_client, TinyAyaClient
+from agents.planner import Indicator, InvestigationPlan, extract_indicators, plan_investigation
+from agents.response_generator import generate_risk_summary
+from database.db import (
     add_correlation,
     add_evidence,
     create_investigation,
@@ -18,8 +19,8 @@ from ..database.db import (
     update_investigation,
     log_audit_event,
 )
-from ..tools.tool_registry import execute_tool, serialize_tools, get_tool_by_name
-from ..config.risk_thresholds import get_risk_level, get_all_thresholds
+from tools.tool_registry import execute_tool, serialize_tools, get_tool_by_name
+from config.risk_thresholds import get_risk_level, get_all_thresholds
 
 MAX_STEPS = 12
 
