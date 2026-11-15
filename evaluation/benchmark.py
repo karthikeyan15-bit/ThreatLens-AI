@@ -5,9 +5,9 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from .metrics import compute_metrics
-from ..database.db import save_evaluation_run
-from ..agents.investigation_agent import run_investigation
+from evaluation.metrics import compute_metrics
+from database.db import save_evaluation_run
+from agents.investigation_agent import run_investigation
 
 
 SCENARIOS_DIR = Path(__file__).parent.parent / "datasets" / "evaluation"
