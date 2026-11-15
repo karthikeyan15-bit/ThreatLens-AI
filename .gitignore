@@ -11,3 +11,4 @@ datasets/raw/*
 !datasets/raw/.gitkeep
 reports/*.pdf
 *.db-journal
+models/*.joblib
