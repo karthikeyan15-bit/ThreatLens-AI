@@ -44,14 +44,14 @@ AGENT_MODELS = {
 # The deployment Space does not ship trained weights.
 HF_MODEL_REPO_ID = os.getenv("HF_MODEL_REPO_ID", "karthikeyan1509/threatlens-models")
 MODEL_FILES = {
-    "email": "models/email_classifier.joblib",
-    "url": "models/url_classifier.joblib",
-    "network": "models/network_classifier.joblib",
+    "email": "email_classifier.joblib",
+    "url": "url_classifier.joblib",
+    "network": "network_classifier.joblib",
 }
 MODEL_METRICS_FILES = {
-    "email": "models/email_classifier_metrics.json",
-    "url": "models/url_classifier_metrics.json",
-    "network": "models/network_classifier_metrics.json",
+    "email": "email_classifier_metrics.json",
+    "url": "url_classifier_metrics.json",
+    "network": "network_classifier_metrics.json",
 }
 
 # ─── Threat intelligence ──────────────────────────────────────────────────
