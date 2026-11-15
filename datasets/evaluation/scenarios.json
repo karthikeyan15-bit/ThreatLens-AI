@@ -1,0 +1,197 @@
+[
+  {
+    "id": "scenario_001",
+    "name": "Phishing Email with Malicious Link",
+    "description": "Classic credential harvesting email with urgency tactics and malicious link",
+    "request": "Analyze this suspicious email: From: security@payroll-services.xyz Subject: URGENT: Payroll Account Suspended - Action Required! Body: Dear Employee, Your payroll account has been suspended due to suspicious activity. You must verify your credentials immediately to restore access. Click here: http://payroll-verify.xyz/login?token=abc123 to confirm your identity. Failure to act within 2 hours will result in permanent account closure. Regards, Payroll Security Team",
+    "indicators": {
+      "emails": ["security@payroll-services.xyz"],
+      "urls": ["http://payroll-verify.xyz/login?token=abc123"],
+      "domains": ["payroll-services.xyz", "payroll-verify.xyz"],
+      "ips": []
+    },
+    "reference": {
+      "expected_tools": ["email_analyzer", "threat_intel_lookup", "url_analyzer"],
+      "expected_calls": [
+        {"tool": "email_analyzer", "arguments": {"content": "..."}},
+        {"tool": "url_analyzer", "arguments": {"url": "http://payroll-verify.xyz/login?token=abc123"}},
+        {"tool": "threat_intel_lookup", "arguments": {"indicator": "payroll-verify.xyz", "indicator_type": "domain"}}
+      ],
+      "expected_risk": "High",
+      "min_expected_evidence": 3,
+      "escalation_decision": false,
+      "ground_truth_labels": {"email": "phishing", "url": "phishing_url"}
+    }
+  },
+  {
+    "id": "scenario_002",
+    "name": "Suspicious URL with Shortener and IP Host",
+    "description": "URL using shortener service, resolves to suspicious IP, multiple red flags",
+    "request": "Investigate this URL: https://bit.ly/fake-banking and also check IP 185.220.101.45",
+    "indicators": {
+      "emails": [],
+      "urls": ["https://bit.ly/fake-banking"],
+      "domains": ["bit.ly"],
+      "ips": ["185.220.101.45"]
+    },
+    "reference": {
+      "expected_tools": ["url_analyzer", "threat_intel_lookup", "ip_analyzer"],
+      "expected_calls": [
+        {"tool": "url_analyzer", "arguments": {"url": "https://bit.ly/fake-banking"}},
+        {"tool": "threat_intel_lookup", "arguments": {"indicator": "https://bit.ly/fake-banking", "indicator_type": "url"}},
+        {"tool": "ip_analyzer", "arguments": {"indicator": "185.220.101.45"}},
+        {"tool": "threat_intel_lookup", "arguments": {"indicator": "185.220.101.45", "indicator_type": "ip"}}
+      ],
+      "expected_risk": "Medium",
+      "min_expected_evidence": 3,
+      "escalation_decision": false,
+      "ground_truth_labels": {"url": "phishing_url", "ip": "suspicious"}
+    }
+  },
+  {
+    "id": "scenario_003",
+    "name": "Legitimate Domain Check",
+    "description": "Check reputation of a well-known legitimate domain",
+    "request": "Check domain google.com and its associated IP addresses.",
+    "indicators": {
+      "emails": [],
+      "urls": [],
+      "domains": ["google.com"],
+      "ips": ["8.8.8.8", "142.250.190.46"]
+    },
+    "reference": {
+      "expected_tools": ["ip_analyzer", "threat_intel_lookup"],
+      "expected_calls": [
+        {"tool": "ip_analyzer", "arguments": {"indicator": "google.com"}},
+        {"tool": "threat_intel_lookup", "arguments": {"indicator": "google.com", "indicator_type": "domain"}},
+        {"tool": "threat_intel_lookup", "arguments": {"indicator": "8.8.8.8", "indicator_type": "ip"}}
+      ],
+      "expected_risk": "Low",
+      "min_expected_evidence": 2,
+      "escalation_decision": false,
+      "ground_truth_labels": {"domain": "legitimate", "ip": "clean"}
+    }
+  },
+  {
+    "id": "scenario_004",
+    "name": "Network Log with Brute Force Attack",
+    "description": "CIC-IDS2017 flow data containing SSH brute force attack patterns",
+    "request": "Analyze this network CSV log for intrusion activity. The log contains SSH brute force attempts from source IP 192.168.1.100 targeting multiple servers on port 22.",
+    "indicators": {
+      "emails": [],
+      "urls": [],
+      "domains": [],
+      "ips": ["192.168.1.100"],
+      "network_log": true
+    },
+    "reference": {
+      "expected_tools": ["network_analyzer", "ip_analyzer"],
+      "expected_calls": [
+        {"tool": "network_analyzer", "arguments": {"csv_content": "..."}},
+        {"tool": "ip_analyzer", "arguments": {"indicator": "192.168.1.100"}}
+      ],
+      "expected_risk": "High",
+      "min_expected_evidence": 3,
+      "escalation_decision": true,
+      "ground_truth_labels": {"attack_type": "brute_force", "protocol": "SSH"}
+    }
+  },
+  {
+    "id": "scenario_005",
+    "name": "Multi-Indicator Phishing Campaign",
+    "description": "Email with multiple malicious URLs, linked to known phishing infrastructure",
+    "request": "Investigate this phishing campaign: Email from noreply@microsoft-security-alerts.xyz with subject 'Security Alert: Unusual Sign-in Activity'. Contains links to https://account-verify-microsoft.xyz/login and https://security-update-office.xyz/verify. Also found IP 45.142.214.89 in email headers.",
+    "indicators": {
+      "emails": ["noreply@microsoft-security-alerts.xyz"],
+      "urls": ["https://account-verify-microsoft.xyz/login", "https://security-update-office.xyz/verify"],
+      "domains": ["microsoft-security-alerts.xyz", "account-verify-microsoft.xyz", "security-update-office.xyz"],
+      "ips": ["45.142.214.89"]
+    },
+    "reference": {
+      "expected_tools": ["email_analyzer", "url_analyzer", "threat_intel_lookup", "ip_analyzer"],
+      "expected_calls": [
+        {"tool": "email_analyzer", "arguments": {"content": "..."}},
+        {"tool": "url_analyzer", "arguments": {"url": "https://account-verify-microsoft.xyz/login"}},
+        {"tool": "url_analyzer", "arguments": {"url": "https://security-update-office.xyz/verify"}},
+        {"tool": "threat_intel_lookup", "arguments": {"indicator": "account-verify-microsoft.xyz", "indicator_type": "domain"}},
+        {"tool": "threat_intel_lookup", "arguments": {"indicator": "security-update-office.xyz", "indicator_type": "domain"}},
+        {"tool": "ip_analyzer", "arguments": {"indicator": "45.142.214.89"}},
+        {"tool": "threat_intel_lookup", "arguments": {"indicator": "45.142.214.89", "indicator_type": "ip"}}
+      ],
+      "expected_risk": "Critical",
+      "min_expected_evidence": 5,
+      "escalation_decision": true,
+      "ground_truth_labels": {"email": "phishing", "urls": ["phishing_url", "phishing_url"], "ip": "malicious"}
+    }
+  },
+  {
+    "id": "scenario_006",
+    "name": "Clean URL - False Positive Test",
+    "description": "Structurally unremarkable URL that should not trigger false positives",
+    "request": "Check this URL: https://www.github.com/microsoft/vscode - is it safe?",
+    "indicators": {
+      "emails": [],
+      "urls": ["https://www.github.com/microsoft/vscode"],
+      "domains": ["github.com"],
+      "ips": []
+    },
+    "reference": {
+      "expected_tools": ["url_analyzer", "threat_intel_lookup"],
+      "expected_calls": [
+        {"tool": "url_analyzer", "arguments": {"url": "https://www.github.com/microsoft/vscode"}},
+        {"tool": "threat_intel_lookup", "arguments": {"indicator": "github.com", "indicator_type": "domain"}}
+      ],
+      "expected_risk": "Low",
+      "min_expected_evidence": 1,
+      "escalation_decision": false,
+      "ground_truth_labels": {"url": "legitimate", "domain": "legitimate"}
+    }
+  },
+  {
+    "id": "scenario_007",
+    "name": "Suspicious Domain with No Intel Match",
+    "description": "Domain with suspicious structure but no threat intel matches - should be 'Inconclusive' not 'Low'",
+    "request": "Check this newly registered domain: https://secure-login-portal-xyz123.top/account/verify",
+    "indicators": {
+      "emails": [],
+      "urls": ["https://secure-login-portal-xyz123.top/account/verify"],
+      "domains": ["secure-login-portal-xyz123.top"],
+      "ips": []
+    },
+    "reference": {
+      "expected_tools": ["url_analyzer", "threat_intel_lookup"],
+      "expected_calls": [
+        {"tool": "url_analyzer", "arguments": {"url": "https://secure-login-portal-xyz123.top/account/verify"}},
+        {"tool": "threat_intel_lookup", "arguments": {"indicator": "secure-login-portal-xyz123.top", "indicator_type": "domain"}}
+      ],
+      "expected_risk": "Inconclusive",
+      "min_expected_evidence": 1,
+      "escalation_decision": false,
+      "ground_truth_labels": {"url": "suspicious", "domain": "unknown"}
+    }
+  },
+  {
+    "id": "scenario_008",
+    "name": "Email with Legitimate Appearance but Malicious Payload",
+    "description": "Well-crafted spear phishing email with clean structure but malicious attachment reference",
+    "request": "Analyze: From: john.doe@company-partnerservices.com Subject: Q4 Invoice #INV-2026-045 Body: Hi, Please find attached the Q4 invoice for your review. The document is available at: https://docs.company-partnerservices.com/invoice/INV-2026-045.pdf Please process payment by Friday. Thanks, John Doe, Accounts Payable",
+    "indicators": {
+      "emails": ["john.doe@company-partnerservices.com"],
+      "urls": ["https://docs.company-partnerservices.com/invoice/INV-2026-045.pdf"],
+      "domains": ["company-partnerservices.com"],
+      "ips": []
+    },
+    "reference": {
+      "expected_tools": ["email_analyzer", "url_analyzer", "threat_intel_lookup"],
+      "expected_calls": [
+        {"tool": "email_analyzer", "arguments": {"content": "..."}},
+        {"tool": "url_analyzer", "arguments": {"url": "https://docs.company-partnerservices.com/invoice/INV-2026-045.pdf"}},
+        {"tool": "threat_intel_lookup", "arguments": {"indicator": "company-partnerservices.com", "indicator_type": "domain"}}
+      ],
+      "expected_risk": "Medium",
+      "min_expected_evidence": 2,
+      "escalation_decision": false,
+      "ground_truth_labels": {"email": "phishing", "url": "phishing_url", "domain": "phishing"}
+    }
+  }
+]

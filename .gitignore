@@ -1,0 +1,13 @@
+.DS_Store
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+.env
+datasets/raw/*
+!datasets/raw/.gitkeep
+reports/*.pdf
+*.db-journal

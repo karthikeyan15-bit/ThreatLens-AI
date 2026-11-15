@@ -1,0 +1,29 @@
+# ThreatLens AI — Training Dependencies
+# Install with: pip install -r requirements-training.txt
+# This is separate from the main requirements.txt to keep the Streamlit deployment lightweight.
+
+# AgentTune and dependencies
+agenttune==1.1.6
+auditkit==1.1.12
+
+# Training dependencies
+trl>=0.7.0
+accelerate>=0.25.0
+peft>=0.6.0
+bitsandbytes>=0.41.0
+
+# Training monitoring
+wandb>=0.15.0
+
+# Training utilities
+datasets>=3.0.0
+transformers>=4.35.0
+torch>=2.1.0
+
+# Evaluation
+scipy>=1.11.0
+numpy>=1.24.0
+
+# Export and reporting
+matplotlib>=3.7.0
+seaborn>=0.12.0

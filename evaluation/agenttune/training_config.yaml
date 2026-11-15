@@ -1,0 +1,76 @@
+# AgentTune Training Configuration for ThreatLens AI
+
+# Algorithm Configuration
+algorithm: "grpo"  # Options: grpo, dpo, ppo, rloo, bco
+
+# Model Configuration
+base_model: "tiny-aya-global"
+model_revision: "main"
+
+# Training Parameters
+learning_rate: 1e-5
+batch_size: 4
+num_epochs: 3
+max_seq_length: 2048
+gradient_accumulation_steps: 4
+
+# LoRA Configuration
+lora_rank: 16
+lora_alpha: 32
+lora_dropout: 0.05
+target_modules:
+  - "q_proj"
+  - "v_proj"
+  - "k_proj"
+  - "o_proj"
+
+# Data Paths
+train_data_path: "artifacts/agenttune/trajectories/train.jsonl"
+val_data_path: "artifacts/agenttune/trajectories/val.jsonl"
+test_data_path: "artifacts/agenttune/trajectories/test.jsonl"
+
+# Output Configuration
+output_dir: "artifacts/agenttune/checkpoints"
+logging_steps: 10
+save_steps: 50
+eval_steps: 50
+
+# Reward Weights (customizable)
+reward_weights:
+  tool_selection: 1.0
+  argument_accuracy: 1.0
+  tool_ordering: 0.5
+  execution_success: 1.0
+  evidence_grounding: 1.5
+  risk_classification: 2.0
+  escalation_decision: 1.0
+  task_completion: 1.5
+  step_efficiency: 0.5
+  no_duplicate_calls: 0.5
+  no_repeated_failures: 0.5
+  no_unsupported_conclusions: 1.0
+  correct_escalation: 1.5
+
+  # Penalties
+  invalid_tool: -2.0
+  invalid_arguments: -1.5
+  duplicate_call: -1.0
+  repeated_failure: -1.0
+  unsupported_conclusion: -2.0
+  incorrect_escalation: -2.0
+  excessive_steps: -0.5
+  false_positive_high_risk: -3.0
+
+# Hardware Configuration
+device: "auto"
+mixed_precision: "bf16"
+gradient_checkpointing: true
+
+# Experiment Tracking
+experiment_name: "threatlens-agenttune"
+wandb_project: null
+tags:
+  - threatlens
+  - cybersecurity
+  - agenttune
+  - tiny-aya

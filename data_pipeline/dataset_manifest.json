@@ -1,0 +1,57 @@
+{
+  "version": "1.0.0",
+  "last_updated": "2026-11-14",
+  "datasets": [
+    {
+      "name": "phishing-email-dataset",
+      "source": "zefang-liu/phishing-email-dataset",
+      "huggingface_url": "https://huggingface.co/datasets/zefang-liu/phishing-email-dataset",
+      "approx_records": 18650,
+      "columns": ["text", "label"],
+      "labels": {"legitimate": 0, "phishing": 1},
+      "license": "MIT",
+      "download_script": "datasets/download.py"
+    },
+    {
+      "name": "PhishingEmailDetection-v2",
+      "source": "cybersectony/PhishingEmailDetectionv2.0",
+      "huggingface_url": "https://huggingface.co/datasets/cybersectony/PhishingEmailDetectionv2.0",
+      "approx_email_records": 22644,
+      "approx_url_records": 177356,
+      "labels": {"legitimate_email": 0, "phishing_email": 1, "legitimate_url": 2, "phishing_url": 3},
+      "license": "CC-BY-SA-4.0",
+      "download_script": "datasets/download.py"
+    },
+    {
+      "name": "CIC-IDS2017",
+      "source": "Canadian Institute for Cybersecurity",
+      "url": "https://www.unb.ca/cic/datasets/ids-2017.html",
+      "description": "Network intrusion detection dataset with benign and malicious flows",
+      "attack_categories": ["Brute Force", "DoS", "DDoS", "Web Attack", "Botnet", "Infiltration"],
+      "license": "Custom — academic use permitted",
+      "note": "Download CSV flow files manually; do not redistribute."
+    }
+  ],
+  "threat_intelligence_sources": [
+    {
+      "name": "URLhaus",
+      "api": "https://urlhaus-api.abuse.ch/",
+      "docs": "https://urlhaus-api.abuse.ch/docs/"
+    },
+    {
+      "name": "PhishTank",
+      "api": "https://phishtank.org/api_info.php",
+      "docs": "https://phishtank.org/developer_info.php"
+    },
+    {
+      "name": "AbuseIPDB",
+      "api": "https://api.abuseipdb.com/api/v2",
+      "docs": "https://docs.abuseipdb.com/"
+    },
+    {
+      "name": "VirusTotal",
+      "api": "https://www.virustotal.com/api/v3",
+      "docs": "https://developers.virustotal.com/reference"
+    }
+  ]
+}

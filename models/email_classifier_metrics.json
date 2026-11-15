@@ -1,0 +1,66 @@
+{
+  "val_accuracy": 0.9836501901140684,
+  "test_accuracy": 0.9749240121580547,
+  "confusion_matrix": [
+    [
+      1583,
+      44
+    ],
+    [
+      22,
+      983
+    ]
+  ],
+  "classification_report": {
+    "legitimate": {
+      "precision": 0.9862928348909658,
+      "recall": 0.9729563614013522,
+      "f1-score": 0.9795792079207921,
+      "support": 1627.0
+    },
+    "phishing": {
+      "precision": 0.9571567672833495,
+      "recall": 0.9781094527363184,
+      "f1-score": 0.96751968503937,
+      "support": 1005.0
+    },
+    "accuracy": 0.9749240121580547,
+    "macro avg": {
+      "precision": 0.9717248010871576,
+      "recall": 0.9755329070688353,
+      "f1-score": 0.9735494464800811,
+      "support": 2632.0
+    },
+    "weighted avg": {
+      "precision": 0.9751675507170848,
+      "recall": 0.9749240121580547,
+      "f1-score": 0.9749744128995804,
+      "support": 2632.0
+    }
+  },
+  "model_info": {
+    "vocab_size": 10000,
+    "sample_features": [
+      "thu",
+      "aug",
+      "08",
+      "2002",
+      "03",
+      "26",
+      "0700",
+      "chip",
+      "wrote",
+      "feature",
+      "added",
+      "razor",
+      "report",
+      "checks",
+      "message",
+      "spam",
+      "don",
+      "send",
+      "body",
+      "just"
+    ]
+  }
+}
