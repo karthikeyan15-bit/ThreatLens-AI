@@ -12,7 +12,7 @@ pip install -r requirements.txt
 
 # Set up environment
 cp .env.example .env
-# Edit .env and add your ANTHROPIC_API_KEY
+# Edit .env and add your TINY_AYA_API_KEY
 
 # Initialize database
 python -c "from database.db import init_db; init_db()"
@@ -47,7 +47,7 @@ python tests/test_tools.py
 
 To run the agent evaluation benchmark:
 
-1. Ensure your Anthropic API key is set in `.env`
+1. Ensure your Tiny Aya API key is set in `.env`
 2. Open the **Evaluation** tab in the Streamlit dashboard
 3. Select agent version and click "Run Benchmark"
 
@@ -76,7 +76,7 @@ All credentials go in `.env`:
 
 | Variable | Description |
 |---|---|
-| `ANTHROPIC_API_KEY` | Required for the agent |
+| `TINY_AYA_API_KEY` | Required for the agent |
 | `TINY_AYA_MODEL` | LLM model name (default: tiny-aya-global) |
 | `URLHAUS_API_KEY` | Optional — URLhaus API key |
 | `PHishtank_API_KEY` | Optional — PhishTank API key |

@@ -139,7 +139,7 @@ def render_investigate():
     if st.button("🔍 Run Investigation", type="primary", disabled=not request.strip()):
         api_key = st.session_state.get("api_key_override") or API_KEY_DEFAULT
         if not api_key:
-            st.error("Please set your Anthropic API key in the sidebar or .env file.")
+            st.error("Please set your Tiny Aya API key in the sidebar or .env file.")
         else:
             with st.spinner("Agent is investigating — this may take up to 60 seconds…"):
                 t0 = time.time()
@@ -425,7 +425,7 @@ with st.sidebar:
         st.rerun()
 
     with st.expander("Configuration", expanded=False):
-        api_input = st.text_input("Anthropic API Key", value="", type="password")
+        api_input = st.text_input("Tiny Aya API Key", value="", type="password")
         if api_input:
             st.session_state.api_key_override = api_input
 
