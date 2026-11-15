@@ -436,30 +436,37 @@ with st.sidebar:
         risk_icon = {"Low": "🟢", "Medium": "🟡", "High": "🔴", "Critical": "🟣", "Inconclusive": "⚪"}.get(inv["risk_level"], "⚪")
         if st.button(f"{risk_icon} {inv['id']}", key=f"nav_{inv['id']}"):
             st.session_state.selected_inv_id = inv["id"]
-            st.session_state.current_tab = "investigate"
             st.rerun()
 
 
-idx_map = {name: i for i, name in enumerate(TAB_NAMES)}
-current = st.session_state.get("current_tab", "overview")
-tab_idx = idx_map.get(current, 0)
 tabs = st.tabs(TAB_NAMES)
 
-renderers = {
-    "Overview": render_overview,
-    "Investigate": render_investigate,
-    "Email": render_email_analyzer,
-    "URL Scanner": render_url_scanner,
-    "IP Intelligence": render_ip_intelligence,
-    "Network Analyzer": render_network_analyzer,
-    "Threat Intelligence": render_threat_intelligence,
-    "Execution Logs": render_execution_logs,
-    "Evaluation": render_evaluation,
-    "Review & Reports": render_review_reports,
-}
+with tabs[0]:
+    render_overview()
 
-for i, tab in enumerate(tabs):
-    with tab:
-        if i == tab_idx:
-            renderer = renderers.get(TAB_NAMES[i], render_overview)
-            renderer()
+with tabs[1]:
+    render_investigate()
+
+with tabs[2]:
+    render_email_analyzer()
+
+with tabs[3]:
+    render_url_scanner()
+
+with tabs[4]:
+    render_ip_intelligence()
+
+with tabs[5]:
+    render_network_analyzer()
+
+with tabs[6]:
+    render_threat_intelligence()
+
+with tabs[7]:
+    render_execution_logs()
+
+with tabs[8]:
+    render_evaluation()
+
+with tabs[9]:
+    render_review_reports()
