@@ -1,54 +1,79 @@
-"""AgentTune training pipeline for ThreatLens AI."""
+"""AgentTune training pipeline for ThreatLens AI.
 
-import os
+Performs genuine AgentTune fine-tuning using the supported
+``agenttune.train_agentic`` API. Trains on real investigation trajectories
+collected from the ThreatLens agent and saves model checkpoints + LoRA
+adapters to disk.
+
+Hardware: CPU or GPU (auto-detected). No fabricated results — training only
+runs when ``agenttune`` and a compatible backend (TRL) are importable.
+"""
+
 import json
-import yaml
 import logging
-from pathlib import Path
-from typing import Dict, List, Optional, Any
+import os
+import random
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
+import yaml
+
+from evaluation.agenttune.agenttune_rewards import (
+    AGENTTUNE_REWARD_FUNCS,
+    AGENTTUNE_REWARD_WEIGHTS,
+)
+from evaluation.agenttune.trajectory_adapter import export_trajectories_jsonl
 from evaluation.agenttune.trajectory_collector import (
-    InvestigationTrajectory,
     TrajectoryCollector,
     TrajectoryTier,
     collect_trajectory,
 )
-from evaluation.agenttune.trajectory_validator import TrajectoryValidator, validate_trajectory
-from evaluation.agenttune.reward_function import RewardFunction, compute_trajectory_reward
-from evaluation.agenttune.trajectory_adapter import TrajectoryAdapter, export_trajectories_jsonl
+from evaluation.agenttune.trajectory_validator import validate_trajectory
 
 # Check AgentTune availability
 try:
     import agenttune
+    from agenttune import train_agentic
+
     AGENTTUNE_AVAILABLE = True
 except ImportError:
     AGENTTUNE_AVAILABLE = False
+
+# Check TRL availability (required backend for agentic training on CPU/GPU)
+try:
+    import trl  # noqa: F401
+
+    TRL_AVAILABLE = True
+except ImportError:
+    TRL_AVAILABLE = False
 
 
 @dataclass
 class TrainingConfig:
     """Configuration for AgentTune training."""
-    # Algorithm
-    algorithm: str = "grpo"  # grpo, dpo, ppo, rloo, bco
 
-    # Model
-    base_model: str = "tiny-aya-global"
-    model_revision: str = "main"
+    # Algorithm
+    algorithm: str = "grpo"
+
+    # Base model served via Hugging Face Router
+    base_model: str = "CohereLabs/tiny-aya-global:cohere"
 
     # Training parameters
     learning_rate: float = 1e-5
-    batch_size: int = 4
+    batch_size: int = 2
     num_epochs: int = 3
     max_seq_length: int = 2048
-    gradient_accumulation_steps: int = 4
+    gradient_accumulation_steps: int = 8
 
     # LoRA config
     lora_rank: int = 16
     lora_alpha: int = 32
     lora_dropout: float = 0.05
-    target_modules: List[str] = field(default_factory=lambda: ["q_proj", "v_proj", "k_proj", "o_proj"])
+    target_modules: List[str] = field(
+        default_factory=lambda: ["q_proj", "v_proj", "k_proj", "o_proj"]
+    )
 
     # Data
     train_data_path: str = "artifacts/agenttune/trajectories/train.jsonl"
@@ -57,34 +82,37 @@ class TrainingConfig:
 
     # Output
     output_dir: str = "artifacts/agenttune/checkpoints"
-    logging_steps: int = 10
-    save_steps: int = 50
-    eval_steps: int = 50
+    logging_steps: int = 5
+    save_steps: int = 25
+    eval_steps: int = 25
 
     # Reward weights
     reward_weights: Dict[str, float] = field(default_factory=dict)
 
     # Hardware
     device: str = "auto"  # auto, cuda, cpu
-    mixed_precision: str = "bf16"  # bf16, fp16, fp32
-    gradient_checkpointing: bool = True
+    mixed_precision: str = "fp32"  # fp32 on CPU, bf16/fp16 on GPU
+    gradient_checkpointing: bool = False
 
     # Experiment tracking
     experiment_name: str = "threatlens-agenttune"
     wandb_project: Optional[str] = None
     tags: List[str] = field(default_factory=list)
 
+    # Reproducibility
+    seed: int = 42
+
     def to_dict(self) -> Dict:
         return {k: v for k, v in self.__dict__.items()}
 
     @classmethod
     def from_yaml(cls, path: str) -> "TrainingConfig":
-        with open(path, "r") as f:
+        with open(path, "r", encoding="utf-8") as f:
             data = yaml.safe_load(f)
         return cls(**data)
 
     def to_yaml(self, path: str):
-        with open(path, "w") as f:
+        with open(path, "w", encoding="utf-8") as f:
             yaml.safe_dump(self.to_dict(), f, default_flow_style=False)
 
 
@@ -96,252 +124,291 @@ class TrainingPipeline:
         self.logger = self._setup_logging()
         self.output_dir = Path(config.output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        random.seed(config.seed)
 
-        # Save config
+        # Save config for reproducibility
         self.config.to_yaml(self.output_dir / "training_config.yaml")
 
     def _setup_logging(self) -> logging.Logger:
         logger = logging.getLogger("agenttune_training")
         logger.setLevel(logging.INFO)
-        handler = logging.StreamHandler()
-        formatter = logging.Formatter(
-            "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-        )
-        handler.setFormatter(formatter)
-        logger.addHandler(handler)
+        if not logger.handlers:
+            handler = logging.StreamHandler()
+            formatter = logging.Formatter(
+                "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+            )
+            handler.setFormatter(formatter)
+            logger.addHandler(handler)
         return logger
 
-    def prepare_data(
+    # ------------------------------------------------------------------ #
+    # Data preparation
+    # ------------------------------------------------------------------ #
+    def _load_scenarios(self) -> List[Dict]:
+        """Load all evaluation scenarios."""
+        scenario_path = Path("datasets/evaluation/scenarios.json")
+        if not scenario_path.exists():
+            self.logger.warning("No scenarios file found at %s", scenario_path)
+            return []
+        with open(scenario_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+
+    def collect_trajectories(
         self,
-        scenario_ids: List[str],
-        output_dir: str,
-        tier: str = "full",
-        ground_truth_map: Optional[Dict] = None
+        scenario_ids: Optional[List[str]] = None,
+        output_dir: str = "artifacts/agenttune/trajectories",
     ) -> Dict[str, str]:
-        """
-        Collect trajectories for all scenarios and save as train/val/test splits.
+        """Collect, validate, and split trajectories into train/val/test.
 
         Returns paths to train/val/test JSONL files.
         """
-        self.logger.info(f"Collecting trajectories for {len(scenario_ids)} scenarios...")
+        scenarios = {s["id"]: s for s in self._load_scenarios()}
+        if scenario_ids is None:
+            scenario_ids = list(scenarios.keys())
 
-        collector = TrajectoryCollector()
-        all_trajectories = []
-
-        for scenario_id in scenario_ids:
-            # Load scenario
-            scenario = self._load_scenario(scenario_id)
-            if not scenario:
-                continue
-
-            ground_truth = ground_truth_map.get(scenario_id) if ground_truth_map else None
-
-            trajectory = collect_trajectory(
-                request=scenario["request"],
-                scenario_id=scenario_id,
-                tier="full",
-                ground_truth=scenario.get("reference", {})
-            )
-
-            # Validate
-            validator = TrajectoryValidator()
-            is_valid, issues = validate_trajectory(trajectory)
-            if not is_valid:
-                self.logger.warning(f"Trajectory for {scenario_id} has issues: {issues}")
-
-            ground_truth_map = trajectory.ground_truth or {}
-            trajectory.ground_truth = ground_truth_map
-
-            # Compute reward
-            reward_result = compute_trajectory_reward(trajectory, ground_truth=trajectory.ground_truth)
-            trajectory.metadata["reward"] = reward_result["total_reward"]
-            trajectory.metadata["reward_breakdown"] = reward_result["breakdown"]
-
-            yield trajectory
-
-    def collect_and_split(
-        self,
-        scenario_ids: List[str],
-        train_ratio: float = 0.7,
-        val_ratio: float = 0.15,
-        test_ratio: float = 0.15,
-        output_dir: str = "artifacts/agenttune/trajectories",
-        ground_truth_map: Optional[Dict] = None
-    ) -> Dict[str, str]:
-        """Collect trajectories and split into train/val/test."""
-        trajectories = []
-        for scenario_id in scenario_ids:
-            scenario = self._load_scenario(scenario_id)
-            if not scenario:
-                continue
-
-            trajectory = collect_trajectory(
-                request=scenario["request"],
-                scenario_id=scenario_id,
-                tier="full",
-                ground_truth=scenario.get("reference", {})
-            )
-
-            # Validate
-            is_valid, issues = validate_trajectory(trajectory)
-            if not is_valid:
-                self.logger.warning(f"Trajectory for {scenario_id} has issues, skipping")
-                continue
-
-            trajectory = list(self.prepare_data([scenario_id], "", ground_truth_map={}))[0]
-            trajectories.append(trajectory)
-
-        # Split
-        import random
-        random.shuffle(trajectories)
-        n = len(trajectories)
-        train_end = int(n * 0.7)
-        val_end = train_end + int(n * 0.15)
-
-        train_traj = trajectories[:train_end]
-        val_traj = trajectories[train_end:train_end + int(n * 0.15)]
-        test_traj = trajectories[train_end + int(n * 0.15):]
-
-        output_dir = Path("artifacts/agenttune/trajectories")
-        output_dir.mkdir(parents=True, exist_ok=True)
-
-        paths = {}
-        for name, trajs in [("train", train_traj), ("val", val_traj), ("test", test_traj)]:
-            path = f"artifacts/agenttune/trajectories/{name}.jsonl"
-            export_trajectories_jsonl(trajs, path, format="agenttune")
-            self.logger.info(f"Saved {len(trajs)} {name} trajectories to {path}")
-
-        return {
-            "train": "artifacts/agenttune/trajectories/train.jsonl",
-            "val": "artifacts/agenttune/trajectories/val.jsonl",
-            "test": "artifacts/agenttune/trajectories/test.jsonl"
-        }
-
-    def _load_scenario(self, scenario_id: str) -> Optional[Dict]:
-        """Load scenario from evaluation dataset."""
-        scenario_path = Path("datasets/evaluation/scenarios.json")
-        if not scenario_path.exists():
-            return None
-
-        with open(scenario_path, "r") as f:
-            scenarios = json.load(f)
-
-        for s in scenarios:
-            if s["id"] == scenario_id:
-                return s
-        return None
-
-    def run_training(self) -> Dict[str, Any]:
-        """Execute the complete training pipeline."""
-        if not AGENTTUNE_AVAILABLE:
-            raise RuntimeError("AgentTune not installed. Run: pip install agenttune")
-
-        self.logger.info("Starting AgentTune training pipeline...")
-        self.logger.info(f"Algorithm: {self.config.algorithm}")
-        self.logger.info(f"Base model: {self.config.base_model}")
-
-        # 1. Prepare data
-        self.logger.info("Preparing training data...")
-        scenario_ids = self._get_all_scenario_ids()
-
-        data_paths = self.collect_and_split(
-            scenario_ids=list(range(1, 9)),  # scenario_001 through scenario_008
-            output_dir="artifacts/agenttune/trajectories"
+        self.logger.info(
+            "Collecting trajectories for %d scenarios...", len(scenario_ids)
         )
 
-        # 2. Configure trainer
-        self.logger.info("Configuring AgentTune trainer...")
-        trainer = self._create_trainer()
+        trajectories = []
+        for scenario_id in scenario_ids:
+            scenario = scenarios.get(scenario_id)
+            if not scenario:
+                self.logger.warning("Scenario %s not found, skipping", scenario_id)
+                continue
 
-        # 3. Train
-        self.logger.info("Starting training...")
-        # Note: Actual training would call trainer.train()
-        # This is a placeholder for the actual training loop
-        training_result = self._run_training(trainer)
+            try:
+                trajectory = collect_trajectory(
+                    request=scenario["request"],
+                    scenario_id=scenario_id,
+                    tier=TrajectoryTier.FULL,
+                    ground_truth=scenario.get("reference", {}),
+                )
+            except Exception as exc:  # noqa: BLE001
+                self.logger.error("Failed to collect %s: %s", scenario_id, exc)
+                continue
 
-        # 4. Save results
-        self._save_results(training_result)
+            is_valid, issues = validate_trajectory(trajectory)
+            if not is_valid:
+                self.logger.warning(
+                    "Trajectory %s has validation issues: %s", scenario_id, issues
+                )
 
-        return {"status": "completed", "output_dir": str(self.output_dir)}
+            trajectories.append(trajectory)
 
-    def _create_trainer(self):
-        """Create AgentTune trainer."""
+        # Deterministic split
+        trajectories.sort(key=lambda t: t.scenario_id)
+        n = len(trajectories)
+        train_end = max(1, int(n * 0.7))
+        val_end = train_end + max(1, int(n * 0.15))
+
+        splits = {
+            "train": trajectories[:train_end],
+            "val": trajectories[train_end:val_end],
+            "test": trajectories[val_end:],
+        }
+
+        out_dir = Path(output_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        paths: Dict[str, str] = {}
+        for name, trajs in splits.items():
+            path = str(out_dir / f"{name}.jsonl")
+            export_trajectories_jsonl(trajs, path, format="agenttune")
+            self.logger.info(
+                "Saved %d %s trajectories to %s", len(trajs), name, path
+            )
+            paths[name] = path
+
+        return paths
+
+    # ------------------------------------------------------------------ #
+    # Training
+    # ------------------------------------------------------------------ #
+    def _resolve_device(self) -> Dict[str, Any]:
+        """Resolve CPU/GPU training settings."""
+        import torch
+
+        cuda_available = torch.cuda.is_available()
+        if self.config.device == "cuda" and not cuda_available:
+            self.logger.warning(
+                "CUDA requested but not available — falling back to CPU"
+            )
+            cuda_available = False
+
+        use_cuda = cuda_available and self.config.device in ("auto", "cuda")
+        mixed = self.config.mixed_precision
+        if not use_cuda:
+            mixed = "fp32"  # CPU cannot use bf16/fp16 efficiently here
+
+        return {
+            "use_cuda": use_cuda,
+            "mixed_precision": mixed,
+            "device": "cuda" if use_cuda else "cpu",
+        }
+
+    def _create_trainer(self, train_dataset, val_dataset):
+        """Create the AgentTune trainer via the supported API."""
         if not AGENTTUNE_AVAILABLE:
-            raise RuntimeError("AgentTune not available")
+            raise RuntimeError(
+                "AgentTune is not installed. Run: pip install agenttune"
+            )
+        if not TRL_AVAILABLE:
+            raise RuntimeError(
+                "TRL is required for AgentTune agentic training. "
+                "Run: pip install trl"
+            )
 
-        import agenttune
-        trainer = agenttune.train_agentic(
+        device_info = self._resolve_device()
+        self.logger.info(
+            "AgentTune training on device=%s mixed_precision=%s",
+            device_info["device"],
+            device_info["mixed_precision"],
+        )
+
+        # Build reward functions from the configured weights
+        reward_funcs = []
+        reward_weights = []
+        weights = self.config.reward_weights or AGENTTUNE_REWARD_WEIGHTS
+        for name, weight in weights.items():
+            fn = AGENTTUNE_REWARD_FUNCS.get(name)
+            if fn is None:
+                self.logger.warning("Unknown reward function %s, skipping", name)
+                continue
+            reward_funcs.append(fn)
+            reward_weights.append(weight)
+
+        if not reward_funcs:
+            raise RuntimeError("No valid reward functions configured")
+
+        trainer = train_agentic(
             algorithm=self.config.algorithm,
             model=self.config.base_model,
+            reward_funcs=reward_funcs,
+            reward_weights=reward_weights,
+            train_dataset=train_dataset,
+            eval_dataset=val_dataset,
+            output_dir=self.config.output_dir,
             learning_rate=self.config.learning_rate,
-            batch_size=self.config.batch_size,
+            per_device_train_batch_size=self.config.batch_size,
+            per_device_eval_batch_size=self.config.batch_size,
             num_train_epochs=self.config.num_epochs,
-            max_seq_length=self.config.max_seq_length,
             gradient_accumulation_steps=self.config.gradient_accumulation_steps,
+            max_seq_length=self.config.max_seq_length,
             lora_r=self.config.lora_rank,
             lora_alpha=self.config.lora_alpha,
             lora_dropout=self.config.lora_dropout,
             target_modules=self.config.target_modules,
-            output_dir=self.config.output_dir,
             logging_steps=self.config.logging_steps,
             save_steps=self.config.save_steps,
             eval_steps=self.config.eval_steps,
-            per_device_train_batch_size=self.config.batch_size,
-            per_device_eval_batch_size=self.config.batch_size,
-            warmup_steps=10,
-            weight_decay=0.01,
-            max_grad_norm=1.0,
-            fp16=False,
-            bf16=True,
             gradient_checkpointing=self.config.gradient_checkpointing,
             logging_dir=str(self.output_dir / "logs"),
             report_to="wandb" if self.config.wandb_project else "none",
             run_name=self.config.experiment_name,
+            seed=self.config.seed,
         )
-
-        # Load datasets
-        # trainer.train_dataset = load_dataset("json", data_files=self.config.train_data_path)["train"]
-        # trainer.eval_dataset = load_dataset("json", data_files=self.config.val_data_path)["train"]
-
         return trainer
 
-    def _run_training(self, trainer) -> Dict:
-        """Run the training."""
-        # This would call trainer.train() in real usage
-        # For now, return mock results
+    def run_training(
+        self,
+        scenario_ids: Optional[List[str]] = None,
+        skip_if_no_data: bool = True,
+    ) -> Dict[str, Any]:
+        """Execute the complete AgentTune training pipeline.
+
+        Returns a dict with training status, output dir, and metrics.
+        """
+        if not AGENTTUNE_AVAILABLE:
+            raise RuntimeError(
+                "AgentTune is not installed. Run: pip install agenttune"
+            )
+
+        self.logger.info("Starting AgentTune training pipeline")
+        self.logger.info(
+            "Algorithm: %s  Base model: %s",
+            self.config.algorithm,
+            self.config.base_model,
+        )
+
+        # 1. Collect & split trajectories
+        data_paths = self.collect_trajectories(
+            scenario_ids=scenario_ids,
+            output_dir="artifacts/agenttune/trajectories",
+        )
+
+        train_path = data_paths["train"]
+        val_path = data_paths["val"]
+
+        # 2. Load datasets for AgentTune
+        from datasets import load_dataset
+
+        train_dataset = load_dataset("json", data_files=train_path)["train"]
+        val_dataset = load_dataset("json", data_files=val_path)["train"]
+
+        self.logger.info(
+            "Loaded train=%d val=%d examples",
+            len(train_dataset),
+            len(val_dataset),
+        )
+
+        # 3. Create trainer
+        trainer = self._create_trainer(train_dataset, val_dataset)
+
+        # 4. Train (genuine execution)
+        self.logger.info("Starting AgentTune training...")
+        train_result = trainer.train()
+
+        # 5. Save results
+        training_result = {
+            "status": "completed",
+            "algorithm": self.config.algorithm,
+            "base_model": self.config.base_model,
+            "device": self._resolve_device()["device"],
+            "train_examples": len(train_dataset),
+            "val_examples": len(val_dataset),
+            "metrics": train_result.metrics
+            if hasattr(train_result, "metrics")
+            else {},
+            "completed_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+        self._save_results(training_result)
+
+        self.logger.info(
+            "AgentTune training completed. Output dir: %s", self.output_dir
+        )
         return {
             "status": "completed",
-            "final_loss": 0.0,
-            "metrics": {}
+            "output_dir": str(self.output_dir),
+            "result": training_result,
         }
 
     def _save_results(self, training_result: Dict):
-        """Save training results."""
+        """Save training results to disk."""
         results_path = self.output_dir / "training_results.json"
-        with open(results_path, "w") as f:
+        with open(results_path, "w", encoding="utf-8") as f:
             json.dump(training_result, f, indent=2)
 
-        # Save training summary
         summary = {
             "experiment_name": self.config.experiment_name,
             "algorithm": self.config.algorithm,
             "base_model": self.config.base_model,
             "training_config": self.config.to_dict(),
             "results": training_result,
-            "completed_at": datetime.utcnow().isoformat(),
+            "completed_at": datetime.now(timezone.utc).isoformat(),
         }
-
         summary_path = Path("artifacts/agenttune/training_summary.json")
-        with open(summary_path, "w") as f:
+        with open(summary_path, "w", encoding="utf-8") as f:
             json.dump(summary, f, indent=2)
 
-        # Markdown report
         report = f"""# AgentTune Training Report
 
 **Experiment:** {self.config.experiment_name}
 **Algorithm:** {self.config.algorithm}
 **Base Model:** {self.config.base_model}
-**Completed:** {datetime.utcnow().isoformat()}
+**Completed:** {training_result.get('completed_at', 'N/A')}
+**Device:** {training_result.get('device', 'N/A')}
 
 ## Configuration
 ```yaml
@@ -350,61 +417,59 @@ class TrainingPipeline:
 
 ## Results
 ```json
-{json.dumps(training_result, indent=2)}
+{json.dumps(training_result.get('metrics', {}), indent=2)}
 ```
+
+Training artifacts (checkpoints + LoRA adapters) are saved under
+`{self.output_dir}`.
 """
         report_path = Path("artifacts/agenttune/training_report.md")
-        with open(report_path, "w") as f:
+        with open(report_path, "w", encoding="utf-8") as f:
             f.write(report)
 
 
 def run_baseline_collection(
     scenario_ids: List[int] = None,
-    output_dir: str = "artifacts/agenttune/trajectories"
+    output_dir: str = "artifacts/agenttune/trajectories",
 ) -> Dict[str, Any]:
-    """Run baseline trajectory collection for all scenarios."""
+    """Run baseline trajectory collection for all scenarios (no training)."""
     if scenario_ids is None:
-        scenario_ids = list(range(1, 9))  # 1-8
+        scenario_ids = list(range(1, 9))
 
     scenario_ids = [f"scenario_{i:03d}" for i in scenario_ids]
 
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    results = {
-        "trajectories": [],
-        "rewards": [],
-        "errors": []
-    }
+    results = {"trajectories": [], "rewards": [], "errors": []}
 
     for scenario_id in scenario_ids:
         print(f"Collecting trajectory for {scenario_id}...")
         try:
-            # Load scenario
-            with open("datasets/evaluation/scenarios.json", "r") as f:
+            with open("datasets/evaluation/scenarios.json", "r", encoding="utf-8") as f:
                 scenarios = json.load(f)
-
-            scenario = next((s for s in json.load(open("datasets/evaluation/scenarios.json")) if s["id"] == scenario_id), None)
+            scenario = next(
+                (s for s in scenarios if s["id"] == scenario_id), None
+            )
             if not scenario:
                 print(f"Scenario {scenario_id} not found")
                 continue
 
-            # Collect trajectory
-            from evaluation.agenttune.trajectory_collector import collect_trajectory
             trajectory = collect_trajectory(
                 request=scenario["request"],
                 scenario_id=scenario_id,
-                ground_truth=scenario.get("reference", {})
+                tier=TrajectoryTier.FULL,
+                ground_truth=scenario.get("reference", {}),
             )
 
-            # Validate
             is_valid, issues = validate_trajectory(trajectory)
 
-            # Compute reward
             from evaluation.agenttune.reward_function import compute_trajectory_reward
-            reward = compute_trajectory_reward(trajectory, ground_truth=trajectory.ground_truth)
 
-            # Save
+            reward = compute_trajectory_reward(
+                trajectory, ground_truth=trajectory.ground_truth
+            )
+
             collector = TrajectoryCollector()
             path = collector.save_trajectory(trajectory)
 
@@ -414,21 +479,23 @@ def run_baseline_collection(
                 "steps": len(trajectory.tool_calls),
                 "status": trajectory.completion_status,
                 "reward": trajectory.metadata.get("reward", 0),
-                "path": str(path)
+                "path": str(path),
+                "valid": is_valid,
+                "validation_issues": issues,
             }
 
-            print(f"  Steps: {trajectory.total_steps}, Reward: {trajectory.metadata.get('reward', 0):.3f}, Status: {trajectory.completion_status}")
+            print(
+                f"  Steps: {trajectory.total_steps}, "
+                f"Reward: {trajectory.metadata.get('reward', 0):.3f}, "
+                f"Status: {trajectory.completion_status}, Valid: {is_valid}"
+            )
 
-            results["trajectories"].append({
-                "scenario_id": trajectory.scenario_id,
-                "trajectory_id": trajectory.trajectory_id,
-                "path": str(path)
-            })
+            results["trajectories"].append(result)
             results["rewards"].append(trajectory.metadata.get("reward", 0))
 
-        except Exception as e:
-            print(f"Error collecting {scenario_id}: {e}")
-            results["errors"].append({"scenario_id": scenario_id, "error": str(e)})
+        except Exception as exc:  # noqa: BLE001
+            print(f"Error collecting {scenario_id}: {exc}")
+            results["errors"].append({"scenario_id": scenario_id, "error": str(exc)})
 
     return results
 
@@ -437,23 +504,16 @@ if __name__ == "__main__":
     print("AgentTune Training Pipeline")
     print("=" * 50)
 
-    # Check if we can run
-    import sys
     if not AGENTTUNE_AVAILABLE:
         print("AgentTune not available. Install with: pip install agenttune")
-        sys.exit(1)
+        raise SystemExit(1)
 
-    print("AgentTune available!")
-    print("Running baseline trajectory collection...")
+    if not TRL_AVAILABLE:
+        print("TRL not available. Install with: pip install trl")
+        raise SystemExit(1)
 
-    # Run baseline collection
-    results = run_baseline_collection()
-
-    # Save results
-    with open("artifacts/agenttune/baseline_results.json", "w") as f:
-        json.dump(results, f, indent=2)
-
-    print(f"\nCollected {len(results['trajectories'])} trajectories")
-    print(f"Average reward: {sum(results['rewards'])/len(results['rewards']) if results['rewards'] else 0:.3f}")
-    if results['errors']:
-        print(f"Errors: {len(results['errors'])}")
+    config = TrainingConfig()
+    pipeline = TrainingPipeline(config)
+    result = pipeline.run_training()
+    print(f"\nTraining completed: {result['status']}")
+    print(f"Output dir: {result['output_dir']}")

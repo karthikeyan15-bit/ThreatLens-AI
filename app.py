@@ -28,7 +28,6 @@ from evaluation.benchmark import run_all_scenarios
 load_dotenv()
 
 DB_PATH = os.getenv("DATABASE_PATH", "database/threatlens.db")
-API_KEY_DEFAULT = os.environ.get("TINY_AYA_API_KEY", "")
 
 if not Path(DB_PATH).parent.exists():
     Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
@@ -137,19 +136,22 @@ def render_investigate():
     )
 
     if st.button("🔍 Run Investigation", type="primary", disabled=not request.strip()):
-        api_key = st.session_state.get("api_key_override") or API_KEY_DEFAULT
-        if not api_key:
-            st.error("Please set your Tiny Aya API key in the sidebar or .env file.")
+        import os as _os
+        if not _os.getenv("HF_TOKEN"):
+            st.error("HF_TOKEN is not configured. Please set it in Hugging Face Space Secrets.")
         else:
             with st.spinner("Agent is investigating — this may take up to 60 seconds…"):
                 t0 = time.time()
-                result = run_investigation(request.strip(), api_key=api_key)
+                result = run_investigation(request.strip())
                 elapsed = time.time() - t0
 
-            st.success(f"✅ Investigation complete in {elapsed:.1f}s")
-            st.session_state.last_result = result
-            st.session_state.selected_inv_id = result.get("investigation_id")
-            st.rerun()
+            if result.get("error"):
+                st.error(f"Investigation failed: {result.get('error')}")
+            else:
+                st.success(f"✅ Investigation complete in {elapsed:.1f}s")
+                st.session_state.last_result = result
+                st.session_state.selected_inv_id = result.get("investigation_id")
+                st.rerun()
 
     if st.session_state.get("last_result"):
         result = st.session_state.last_result
@@ -220,12 +222,12 @@ def render_url_scanner():
 
         st.subheader("Structural Analysis")
         c1, c2 = st.columns(2)
-        c1.metric("Risk Score", f"{result['risk_score']:.2f}")
-        c2.metric("Verdict", result["verdict"].capitalize())
+        c1.metric("Risk Score", f"{result['structural_risk_score']:.2f}")
+        c2.metric("Verdict", result["combined_verdict"].capitalize())
 
-        if result["indicators"]:
+        if result["structural_indicators"]:
             st.markdown("**Indicators Found:**")
-            for ind in result["indicators"]:
+            for ind in result["structural_indicators"]:
                 st.warning(f"⚠ {ind}")
 
         with st.expander("Parsed URL Details"):
@@ -235,7 +237,7 @@ def render_url_scanner():
 def render_ip_intelligence():
     st.header("🔍 IP Intelligence")
     indicator = st.text_input("IP Address or Domain")
-    ind_type = st.selectbox("Type", ["ip", "domain"])
+    ind_type = st.selectbox("Type", ["ip", "domain"], key="ip_intel_type_select")
 
     if st.button("Analyze", disabled=not indicator.strip()):
         from tools.ip_analyzer import run as ip_run
@@ -260,10 +262,10 @@ def render_network_analyzer():
 
 def render_threat_intelligence():
     st.header("🛡️ Threat Intelligence Lookup")
-    st.caption("Query live threat intelligence sources (URLhaus, PhishTank, AbuseIPDB, VirusTotal)")
+    st.caption("Query live threat intelligence sources (URLhaus, OpenPhish, AbuseIPDB, VirusTotal)")
 
     indicator = st.text_input("Indicator (URL, IP, or Domain)")
-    ind_type = st.selectbox("Type", ["url", "ip", "domain"])
+    ind_type = st.selectbox("Type", ["url", "ip", "domain"], key="threat_intel_type_select")
 
     if st.button("Lookup", disabled=not indicator.strip()):
         from tools.threat_intel_tool import run as ti_run
@@ -288,7 +290,7 @@ def render_execution_logs():
     inv_id = st.text_input("Investigation ID")
     if not inv_id:
         recent = get_investigations(limit=10)
-        inv_id = st.selectbox("Or select recent", [i["id"] for i in recent], index=None)
+        inv_id = st.selectbox("Or select recent", [i["id"] for i in recent], index=None, key="exec_logs_recent_select")
 
     if inv_id:
         tool_calls = get_tool_calls(inv_id)
@@ -307,15 +309,14 @@ def render_execution_logs():
 
 def render_evaluation():
     st.header("📊 Agent Evaluation Dashboard")
-    api_key = st.session_state.get("api_key_override") or API_KEY_DEFAULT
 
     c1, c2 = st.columns(2)
     with c1:
-        version = st.selectbox("Agent Version", ["baseline", "improved"])
+        version = st.selectbox("Agent Version", ["baseline", "improved"], key="eval_version_select")
     with c2:
         if st.button("Run Benchmark"):
             with st.spinner("Running evaluation scenarios…"):
-                result = run_all_scenarios(agent_version=version, api_key=api_key)
+                result = run_all_scenarios(agent_version=version)
             st.session_state.eval_result = result
 
     if st.session_state.get("eval_result"):
@@ -348,7 +349,7 @@ def render_review_reports():
     inv_id = st.text_input("Investigation ID for review")
     if not inv_id:
         recent = get_investigations(limit=10)
-        inv_id = st.selectbox("Or select recent", [i["id"] for i in recent], index=None)
+        inv_id = st.selectbox("Or select recent", [i["id"] for i in recent], index=None, key="review_reports_recent_select")
 
     if inv_id:
         inv = get_investigation(inv_id)
@@ -430,11 +431,6 @@ with st.sidebar:
         st.session_state.last_result = None
         st.session_state.current_tab = "investigate"
         st.rerun()
-
-    with st.expander("Configuration", expanded=False):
-        api_input = st.text_input("Tiny Aya API Key", value="", type="password")
-        if api_input:
-            st.session_state.api_key_override = api_input
 
     st.divider()
     st.markdown("**Recent Investigations**")

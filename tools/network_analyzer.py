@@ -20,10 +20,18 @@ KNOWN_ATTACK_SIGNATURES = {
     "port_scan": {"flag": "SYN", "unique_dst_ports_per_src": 20},
 }
 
+# Maximum rows to process for performance — prevents timeouts on large files
+MAX_ROWS = 50000
+
 
 def parse_csv(content: str) -> pd.DataFrame:
-    """Parse uploaded CSV content into a DataFrame."""
+    """Parse uploaded CSV content into a DataFrame.
+
+    Limits rows to MAX_ROWS to prevent timeouts on very large files.
+    """
     df = pd.read_csv(io.StringIO(content))
+    if len(df) > MAX_ROWS:
+        df = df.head(MAX_ROWS)
     return df
 
 
@@ -78,27 +86,29 @@ def detect_anomalies(df: pd.DataFrame, col_map: dict) -> list[dict]:
                 "severity": "high" if pct > 20 else "medium",
             })
 
-    # Signature-based anomaly detection
+    # Signature-based anomaly detection — port scan
     if src_col and proto_col and dport_col:
         src_proto_df = df[[src_col, proto_col, dport_col]].dropna()
-
-        for proto_val, group in src_proto_df.groupby(proto_col):
-            g = group.copy()
-            for src_ip, src_group in g.groupby(src_col):
-                unique_ports = src_group[dport_col].nunique()
-                if unique_ports >= KNOWN_ATTACK_SIGNATURES.get("port_scan", {}).get("unique_dst_ports_per_src", 20):
-                    findings.append({
-                        "type": "port_scan",
-                        "source_ip": str(src_ip),
-                        "protocol": str(proto_val),
-                        "unique_dest_ports": unique_ports,
-                        "severity": "high",
-                    })
+        if len(src_proto_df) > 0:
+            # Count unique destination ports per source IP
+            port_counts = src_proto_df.groupby([src_col, proto_col])[dport_col].nunique().reset_index()
+            port_counts.columns = [src_col, proto_col, "unique_ports"]
+            threshold = KNOWN_ATTACK_SIGNATURES.get("port_scan", {}).get("unique_dst_ports_per_src", 20)
+            port_scans = port_counts[port_counts["unique_ports"] >= threshold]
+            for _, row in port_scans.iterrows():
+                findings.append({
+                    "type": "port_scan",
+                    "source_ip": str(row[src_col]),
+                    "protocol": str(row[proto_col]),
+                    "unique_dest_ports": int(row["unique_ports"]),
+                    "severity": "high",
+                })
 
     # High packet volume
     bytes_col = col_map.get("total_bytes")
-    if bytes_col and bytes_col in df.columns:
-        high_volume = df[df[bytes_col] > df[bytes_col].quantile(0.95)]
+    if bytes_col and bytes_col in df.columns and len(df) > 0:
+        q95 = df[bytes_col].quantile(0.95)
+        high_volume = df[df[bytes_col] > q95]
         if len(high_volume) > 0:
             findings.append({
                 "type": "high_volume_flow",

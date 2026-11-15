@@ -33,7 +33,7 @@ def _check_argument_accuracy(actual: dict, reference: dict) -> float:
     for exp in expected:
         for act in calls:
             if act["tool"] == exp.get("tool"):
-                act_args = set(str(act.get("arguments", {})).keys())
+                act_args = set(act.get("arguments", {}).keys())
                 exp_args = set(exp.get("arguments", {}).keys())
                 if exp_args and act_args & exp_args:
                     matches += 1

@@ -34,7 +34,9 @@ def init_db(db_path: str = "database/threatlens.db"):
 
 def create_investigation(inv_type: str, input_content: str) -> str:
     """Create a new investigation record. Returns investigation ID."""
-    inv_id = f"INV-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{hash(input_content[:50]) & 0xFFFF:04X}"
+    import uuid
+
+    inv_id = f"INV-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}"
     with get_connection() as conn:
         conn.execute(
             """INSERT INTO investigations (id, type, input_content, status)
@@ -166,28 +168,56 @@ def get_correlations(inv_id: str) -> list[dict]:
 
 
 def save_evaluation_run(run_data: dict):
-    """Save an evaluation run record."""
-    with get_connection() as conn:
-        conn.execute(
-            """INSERT INTO evaluation_runs
-               (agent_version, scenario_id, tool_selection_correct, argument_accuracy,
-                task_completed, classification_correct, evidence_grounding,
-                tool_call_count, escalation_appropriate, actual_output, reference_output)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                run_data["agent_version"],
-                run_data["scenario_id"],
-                run_data.get("tool_selection_correct"),
-                run_data.get("argument_accuracy"),
-                run_data.get("task_completed"),
-                run_data.get("classification_correct"),
-                run_data.get("evidence_grounding"),
-                run_data.get("tool_call_count", 0),
-                run_data.get("escalation_appropriate"),
-                json.dumps(run_data.get("actual_output", {})),
-                json.dumps(run_data.get("reference_output", {})),
-            ),
-        )
+    """Save an evaluation run record.
+
+    Never crashes the evaluation if the database write fails — logs a
+    warning instead so the agent can continue.
+    """
+    import logging
+
+    logger = logging.getLogger("threatlens.db")
+    try:
+        with get_connection() as conn:
+            # Ensure table exists (safety net if init_db wasn't called)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS evaluation_runs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    agent_version TEXT NOT NULL,
+                    scenario_id TEXT NOT NULL,
+                    tool_selection_correct BOOLEAN,
+                    argument_accuracy REAL,
+                    task_completed BOOLEAN,
+                    classification_correct BOOLEAN,
+                    evidence_grounding REAL,
+                    tool_call_count INTEGER,
+                    escalation_appropriate BOOLEAN,
+                    actual_output TEXT,
+                    reference_output TEXT,
+                    completed_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            conn.execute(
+                """INSERT INTO evaluation_runs
+                   (agent_version, scenario_id, tool_selection_correct, argument_accuracy,
+                    task_completed, classification_correct, evidence_grounding,
+                    tool_call_count, escalation_appropriate, actual_output, reference_output)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    run_data.get("agent_version", "unknown"),
+                    run_data.get("scenario_id", "unknown"),
+                    run_data.get("tool_selection_correct"),
+                    run_data.get("argument_accuracy"),
+                    run_data.get("task_completed"),
+                    run_data.get("classification_correct"),
+                    run_data.get("evidence_grounding"),
+                    run_data.get("tool_call_count", 0),
+                    run_data.get("escalation_appropriate"),
+                    json.dumps(run_data.get("actual_output", {})),
+                    json.dumps(run_data.get("reference_output", {})),
+                ),
+            )
+    except Exception as exc:
+        logger.warning(f"Failed to save evaluation run: {exc}")
 
 
 def get_evaluation_stats(agent_version: Optional[str] = None) -> dict:

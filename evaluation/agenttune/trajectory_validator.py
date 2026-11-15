@@ -66,6 +66,7 @@ class TrajectoryValidator:
     def __init__(self, strict_mode: bool = True):
         self.strict_mode = strict_mode
         self.issues: List[Dict] = []
+        self._tool_call_ids: set = set()
 
     def validate(self, trajectory: "InvestigationTrajectory") -> Tuple[bool, List[Dict]]:
         """Validate trajectory and return (is_valid, issues)."""
@@ -128,7 +129,8 @@ class TrajectoryValidator:
         ]
 
         for field_name in self.REQUIRED_BASE_FIELDS:
-            if not hasattr(trajectory, field_name) or getattr(trajectory, field_name) is None:
+            value = getattr(trajectory, field_name, None)
+            if value is None or (isinstance(value, str) and not value.strip()):
                 self._add_issue("error", f"Missing required field: {field_name}", field=field_name)
 
         # Check tier
@@ -206,16 +208,16 @@ class TrajectoryValidator:
 
             required = ["indicator_type", "indicator_value", "source_tool", "veracity", "confidence"]
             for field in required:
-                if field not in evidence or evidence[field] is None:
+                if field not in ev or ev[field] is None:
                     self._add_issue("error", f"Evidence {i} missing field: {field}", step=i)
 
             # Validate veracity
-            veracity = evidence.get("veracity", "").lower()
+            veracity = ev.get("veracity", "").lower()
             if veracity not in self.VALID_VERACITY_VALUES:
                 self._add_issue("warning", f"Evidence {i} has invalid veracity: {veracity}")
 
             # Validate confidence
-            conf = evidence.get("confidence")
+            conf = ev.get("confidence")
             if conf is not None and (conf < 0 or conf > 1):
                 self._add_issue("warning", f"Evidence {i} confidence out of range: {conf}")
 

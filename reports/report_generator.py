@@ -27,7 +27,7 @@ def generate_html_report(result: dict, investigation_id: str) -> str:
             <td><code>{e.get('indicator_value', '')}</code></td>
             <td><span style="color:{verbatim_color};font-weight:bold">{verbatim_badge}</span></td>
             <td>{e.get('source_tool', 'N/A')}</td>
-            <td>{round(e.get('confidence', 0) * 100)}%</td>
+            <td>{round((e.get('confidence') or 0) * 100)}%</td>
         </tr>"""
 
     tool_rows = ""
@@ -49,7 +49,7 @@ def generate_html_report(result: dict, investigation_id: str) -> str:
             <td><code>{c.get('indicator_a', '')}</code></td>
             <td><code>{c.get('indicator_b', '')}</code></td>
             <td>{c.get('relationship', '')}</td>
-            <td>{round(c.get('strength', 0) * 100)}%</td>
+            <td>{round((c.get('strength') or 0) * 100)}%</td>
         </tr>"""
 
     html = f"""<!DOCTYPE html>
@@ -76,7 +76,7 @@ def generate_html_report(result: dict, investigation_id: str) -> str:
         <p>Investigation ID: <strong>{investigation_id}</strong></p>
         <p>Generated: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}</p>
         <p>Risk Level: <span class="risk-badge">{risk}</span></p>
-        <p>Confidence: {round(result.get('confidence', 0) * 100)}%</p>
+        <p>Confidence: {round((result.get('confidence') or 0) * 100)}%</p>
     </div>
 
     <div class="section-title">Investigation Summary</div>

@@ -1,4 +1,29 @@
-"""Investigation agent — orchestrates multi-step threat investigations."""
+"""Investigation agent — orchestrates multi-step threat investigations.
+
+Uses an explicit JSON-action tool execution loop instead of relying on
+native model tool calling (which Tiny Aya Global does not support).
+
+The model is instructed to return exactly one JSON action per response:
+
+Tool request:
+    {
+        "action": "call_tool",
+        "tool_name": "url_analyzer",
+        "arguments": {"url": "https://example.com"},
+        "reason": "Explain why this tool is required"
+    }
+
+Final response:
+    {
+        "action": "final",
+        "conclusion": {
+            "risk_level": "High",
+            "confidence": 0.85,
+            "summary": "Evidence-based explanation",
+            "escalate": true
+        }
+    }
+"""
 
 import json
 import time
@@ -7,7 +32,13 @@ from datetime import datetime
 from typing import Any
 
 # Use absolute imports to work correctly on Hugging Face Spaces
-from agents.llm_client import get_llm_client, TinyAyaClient
+from agents.llm_client import (
+    get_llm_client,
+    TinyAyaClient,
+    AuthenticationError,
+    ModelNotFoundError,
+    RateLimitError,
+)
 from agents.planner import Indicator, InvestigationPlan, extract_indicators, plan_investigation
 from agents.response_generator import generate_risk_summary
 from database.db import (
@@ -19,10 +50,11 @@ from database.db import (
     update_investigation,
     log_audit_event,
 )
-from tools.tool_registry import execute_tool, serialize_tools, get_tool_by_name
+from tools.tool_registry import execute_tool, serialize_tools, get_tool_by_name, validate_arguments
 from config.risk_thresholds import get_risk_level, get_all_thresholds
+from config.settings import HF_MODEL_ID, MAX_INVESTIGATION_STEPS
 
-MAX_STEPS = 12
+MAX_STEPS = MAX_INVESTIGATION_STEPS
 
 
 @dataclass
@@ -34,6 +66,10 @@ class AgentState:
     correlations: list[dict] = field(default_factory=list)
     steps_taken: int = 0
     done: bool = False
+    # Set of (tool_name, serialized_arguments) already executed — prevents
+    # infinite loops where the model keeps calling the same tool with the
+    # same arguments.
+    seen_tool_calls: set = field(default_factory=set)
 
 
 SYSTEM_PROMPT = """You are a cybersecurity investigation analyst. Your job is to investigate suspicious indicators using available tools.
@@ -46,10 +82,21 @@ RULES:
 - When uncertain, recommend human escalation.
 - Always call your tools one at a time and wait for results before deciding the next step.
 - Validate your tool arguments before calling.
+- Return exactly ONE JSON action per response. Do not include any text outside the JSON.
 
 OUTPUT FORMAT:
-When you have gathered enough evidence to conclude, respond with a JSON block like:
+
+When you need to call a tool, respond with:
 {
+  "action": "call_tool",
+  "tool_name": "<tool_name>",
+  "arguments": { "<arg_name>": "<arg_value>" },
+  "reason": "Explain why this tool is required"
+}
+
+When you have gathered enough evidence to conclude, respond with:
+{
+  "action": "final",
   "conclusion": {
     "risk_level": "Low|Medium|High|Critical|Inconclusive",
     "confidence": 0.0-1.0,
@@ -58,7 +105,12 @@ When you have gathered enough evidence to conclude, respond with a JSON block li
   }
 }
 
-Start by extracting indicators from the request, then call the appropriate tools."""
+AVAILABLE TOOLS:
+{tools_json}
+
+RISK THRESHOLDS: {thresholds_str}
+
+Start by extracting indicators from the request, then call the appropriate tools one at a time."""
 
 
 def _build_system_prompt() -> str:
@@ -93,16 +145,7 @@ def _validate_tool_args(tool_name: str, args: dict) -> tuple[bool, str]:
     if not tool:
         return False, f"Tool '{tool_name}' not found"
 
-    schema = tool.parameters
-    required = schema.get("required", [])
-    properties = schema.get("properties", {})
-
-    for req in required:
-        if req not in args:
-            return False, f"Missing required argument: {req}"
-
-    # Could add more validation here (type checking, enum values, etc.)
-    return True, ""
+    return validate_arguments(tool.parameters, args)
 
 
 def _should_continue_investigation(evidence: list[dict], tool_calls: list[dict], max_steps: int, steps_taken: int) -> tuple[bool, str]:
@@ -129,6 +172,40 @@ def _should_continue_investigation(evidence: list[dict], tool_calls: list[dict],
     return True, ""
 
 
+def _validate_and_sanitize_conclusion(conclusion: dict) -> tuple[str, float, str, bool]:
+    """Validate and sanitize model-generated conclusion values.
+
+    Ensures:
+        - risk_level is one of: Low, Medium, High, Critical, Inconclusive
+        - confidence is clamped to [0.0, 1.0]
+        - summary is a non-empty string
+        - escalate is a boolean
+    """
+    valid_risk_levels = {"Low", "Medium", "High", "Critical", "Inconclusive"}
+    risk_level = conclusion.get("risk_level", "Inconclusive")
+    if not isinstance(risk_level, str) or risk_level not in valid_risk_levels:
+        risk_level = "Inconclusive"
+
+    confidence = conclusion.get("confidence", 0.1)
+    if not isinstance(confidence, (int, float)):
+        confidence = 0.1
+    confidence = max(0.0, min(1.0, float(confidence)))
+
+    summary = conclusion.get("summary", "Investigation completed.")
+    if not isinstance(summary, str) or not summary.strip():
+        summary = "Investigation completed."
+
+    escalate = conclusion.get("escalate", False)
+    if not isinstance(escalate, bool):
+        escalate = bool(escalate)
+
+    # Unsupported conclusions (e.g., declaring safe with no evidence) must escalate
+    if risk_level == "Low" and confidence < 0.3 and not conclusion.get("evidence_referenced", False):
+        escalate = True
+
+    return risk_level, confidence, summary, escalate
+
+
 def correlate_evidence(evidence: list[dict], llm_client: TinyAyaClient) -> list[dict]:
     """Find relationships between evidence items using LLM reasoning."""
     if len(evidence) < 2:
@@ -148,7 +225,7 @@ Evidence:
 If no clear correlations exist, return an empty array."""
 
     response = llm_client.messages_create(
-        model="tiny-aya-global",
+        model=HF_MODEL_ID,
         max_tokens=512,
         messages=[{"role": "user", "content": prompt}],
     )
@@ -159,8 +236,18 @@ If no clear correlations exist, return an empty array."""
         return []
 
 
-def run_investigation(request: str, api_key: str | None = None, model: str = "tiny-aya-global") -> dict:
-    """Run a full agentic investigation and return structured results."""
+def run_investigation(request: str, model: str = None) -> dict:
+    """Run a full agentic investigation using the JSON-action loop.
+
+    Args:
+        request: The investigation request text.
+        model: Optional model override. If not provided, uses HF_MODEL_ID from config.
+
+    Returns:
+        dict with investigation results including risk_level, confidence, summary, etc.
+    """
+    # Use configured model ID consistently
+    model_id = model or HF_MODEL_ID or "CohereLabs/tiny-aya-global:cohere"
     client = get_llm_client()
 
     inv_id = create_investigation("multi", request)
@@ -204,119 +291,183 @@ Extract all indicators and determine the appropriate tools to use. Start with th
             start_time = time.time()
 
             response = client.messages_create(
-                model=model,
+                model=model_id,
                 max_tokens=1024,
                 messages=state.history,
-                tools=serialize_tools(),
             )
 
             duration_ms = int((time.time() - start_time) * 1000)
 
-            for block in response.content:
-                if block.type == "text":
-                    state.history.append({"role": "assistant", "content": block.text})
+            # Extract text from response
+            response_text = ""
+            if response.content:
+                response_text = response.content[0].text
 
-                    # Log LLM decision
-                    log_audit_event(inv_id, state.steps_taken, "llm_decision", {"text": block.text})
+            if not response_text:
+                log_audit_event(inv_id, state.steps_taken, "llm_empty_response", {"step": state.steps_taken})
+                state.steps_taken += 1
+                continue
 
-                    # Check for conclusion JSON
-                    if "{" in block.text and "}" in block.text:
-                        try:
-                            conclusion_match = block.text[block.text.rfind("{"):block.text.rfind("}") + 1]
-                            conclusion = json.loads(conclusion_match)
-                            if "conclusion" in conclusion:
-                                result = conclusion["conclusion"]
-                                risk, confidence = _assess_risk(state.evidence)
-                                final_risk = result.get("risk_level", risk)
-                                final_confidence = result.get("confidence", confidence)
-                                return _finalize_result(
-                                    inv_id, state, final_risk, final_confidence,
-                                    result.get("summary", ""), result.get("escalate", False),
-                                    duration_ms,
-                                )
-                        except (json.JSONDecodeError, IndexError):
-                            pass
+            # Append assistant's JSON response to conversation history
+            state.history.append({"role": "assistant", "content": response_text})
 
-                elif block.type == "tool_use":
-                    tool_name = block.name
-                    tool_args = block.input or {}
+            # Log LLM decision
+            log_audit_event(inv_id, state.steps_taken, "llm_decision", {"text": response_text})
 
-                    # Validate tool arguments
-                    valid, error = _validate_tool_args(tool_name, tool_args)
-                    if not valid:
-                        tool_result = {"success": False, "error": error, "data": {}}
-                        state.history.append({
-                            "role": "assistant",
-                            "content": [{"type": "tool_use", "id": block.id, "name": tool_name, "input": tool_args}],
-                        })
-                        state.history.append({
-                            "role": "user",
-                            "content": [{
-                                "type": "tool_result",
-                                "tool_use_id": block.id,
-                                "content": json.dumps(tool_result),
-                                "is_error": True,
-                            }],
-                        })
-                        log_audit_event(inv_id, state.steps_taken, "tool_argument_error", {"tool": tool_name, "error": error})
-                        continue
+            # Parse JSON action from response
+            action = client.extract_json_action(response_text)
 
-                    # Log tool call decision
-                    log_audit_event(inv_id, state.steps_taken, "tool_call", {"tool": tool_name, "arguments": tool_args})
+            if action is None:
+                # Malformed or no JSON found — reject and ask again
+                log_audit_event(inv_id, state.steps_taken, "invalid_json", {"text": response_text[:500]})
+                state.history.append({
+                    "role": "user",
+                    "content": "Invalid response format. Please return exactly one JSON action. "
+                               "Use either {{\"action\": \"call_tool\", ...}} or "
+                               "{{\"action\": \"final\", \"conclusion\": {{...}}}}. "
+                               "Do not include any text outside the JSON.",
+                })
+                state.steps_taken += 1
+                continue
 
-                    tool_result = execute_tool(tool_name, tool_args)
+            action_type = action.get("action")
 
-                    state.history.append({
-                        "role": "assistant",
-                        "content": [{"type": "tool_use", "id": block.id, "name": tool_name, "input": tool_args}],
-                    })
+            if action_type == "call_tool":
+                tool_name = action.get("tool_name", "")
+                tool_args = action.get("arguments", {}) or {}
+                reason = action.get("reason", "")
+
+                # Validate tool name against registry
+                if not tool_name:
+                    log_audit_event(inv_id, state.steps_taken, "tool_missing_name", {"reason": reason})
                     state.history.append({
                         "role": "user",
-                        "content": [{
-                            "type": "tool_result",
-                            "tool_use_id": block.id,
-                            "content": json.dumps(tool_result),
-                            "is_error": not tool_result.get("success", False),
-                        }],
+                        "content": "Missing tool_name in call_tool action. Please specify a valid tool name.",
                     })
+                    state.steps_taken += 1
+                    continue
 
-                    # Log tool result
-                    log_audit_event(inv_id, state.steps_taken, "tool_result", {"tool": tool_name, "result": tool_result})
+                tool = get_tool_by_name(tool_name)
+                if not tool:
+                    log_audit_event(inv_id, state.steps_taken, "unknown_tool", {"tool": tool_name})
+                    state.history.append({
+                        "role": "user",
+                        "content": f"Unknown tool '{tool_name}'. Available tools: "
+                                   f"{', '.join(t.name for t in serialize_tools())}.",
+                    })
+                    state.steps_taken += 1
+                    continue
 
-                    log_tool_call(inv_id, state.steps_taken, tool_name, tool_args, tool_result, duration_ms)
-                    state.tool_calls_log.append({
-                        "step": state.steps_taken,
+                # Validate required arguments and argument types against tool schemas
+                valid, error = _validate_tool_args(tool_name, tool_args)
+                if not valid:
+                    log_audit_event(inv_id, state.steps_taken, "tool_argument_error", {"tool": tool_name, "error": error})
+                    state.history.append({
+                        "role": "user",
+                        "content": f"Invalid arguments for tool '{tool_name}': {error}. "
+                                   f"Please check the required arguments and types.",
+                    })
+                    state.steps_taken += 1
+                    continue
+
+                # Prevent duplicate/infinite tool calls: reject if the same
+                # tool was already called with the same arguments.
+                call_key = (tool_name, json.dumps(tool_args, sort_keys=True))
+                if call_key in state.seen_tool_calls:
+                    log_audit_event(inv_id, state.steps_taken, "duplicate_tool_call_blocked", {"tool": tool_name, "arguments": tool_args})
+                    state.history.append({
+                        "role": "user",
+                        "content": f"You already called tool '{tool_name}' with these arguments. Do not repeat it. "
+                                   f"Either call a different tool or provide your final conclusion.",
+                    })
+                    state.steps_taken += 1
+                    continue
+                state.seen_tool_calls.add(call_key)
+
+                # Log tool call decision
+                log_audit_event(inv_id, state.steps_taken, "tool_call", {"tool": tool_name, "arguments": tool_args, "reason": reason})
+
+                # Execute approved tool only through execute_tool()
+                tool_result = execute_tool(tool_name, tool_args)
+
+                state.history.append({
+                    "role": "user",
+                    "content": json.dumps({
                         "tool": tool_name,
                         "arguments": tool_args,
                         "result": tool_result,
-                        "duration_ms": duration_ms,
+                    }, indent=2),
+                })
+
+                # Log tool result
+                log_audit_event(inv_id, state.steps_taken, "tool_result", {"tool": tool_name, "result": tool_result})
+
+                log_tool_call(inv_id, state.steps_taken, tool_name, tool_args, tool_result, duration_ms)
+                state.tool_calls_log.append({
+                    "step": state.steps_taken,
+                    "tool": tool_name,
+                    "arguments": tool_args,
+                    "result": tool_result,
+                    "duration_ms": duration_ms,
+                })
+
+                # Collect evidence from tool results
+                _extract_evidence_from_result(inv_id, tool_name, tool_result, state)
+
+                # Check if we should continue after each tool
+                should_continue, reason = _should_continue_investigation(state.evidence, state.tool_calls_log, MAX_STEPS, state.steps_taken)
+                if not should_continue:
+                    log_audit_event(inv_id, state.steps_taken, "evidence_sufficient", {"reason": reason})
+                    # Do NOT set state.done = True here — that would exit the loop
+                    # before the model can produce a conclusion. Instead, prompt
+                    # the model to produce a final action on the next iteration.
+                    state.history.append({
+                        "role": "user",
+                        "content": f"Evidence sufficient to conclude ({reason}). Provide your conclusion in the JSON final action format."
                     })
+                    # Count this as a step so we cannot loop forever if the model
+                    # keeps refusing to conclude.
+                    state.steps_taken += 1
+                    continue
 
-                    # Collect evidence from tool results
-                    _extract_evidence_from_result(inv_id, tool_name, tool_result, state)
+                # Run correlation mid-loop every 3 steps
+                if state.steps_taken % 3 == 0 and state.steps_taken > 0:
+                    corr_results = correlate_evidence(state.evidence, client)
+                    for c in corr_results:
+                        add_correlation(inv_id, c["indicator_a"], c["indicator_b"], c["relationship"], c["strength"])
+                    state.correlations.extend(corr_results)
+                    log_audit_event(inv_id, state.steps_taken, "mid_loop_correlation", {"correlations": corr_results})
 
-                    # Check if we should continue after each tool
-                    should_continue, reason = _should_continue_investigation(state.evidence, state.tool_calls_log, MAX_STEPS, state.steps_taken)
-                    if not should_continue:
-                        log_audit_event(inv_id, state.steps_taken, "evidence_sufficient", {"reason": reason})
-                        state.done = True
-                        # Force conclusion on next iteration by adding a prompt
-                        state.history.append({
-                            "role": "user",
-                            "content": f"Evidence sufficient to conclude ({reason}). Provide your conclusion in the JSON format."
-                        })
-                        continue
+            elif action_type == "final":
+                conclusion = action.get("conclusion", {})
+                risk_level, confidence, summary, escalate = _validate_and_sanitize_conclusion(conclusion)
 
-                    # Run correlation mid-loop every 3 steps
-                    if state.steps_taken % 3 == 0 and state.steps_taken > 0:
-                        corr_results = correlate_evidence(state.evidence, client)
-                        for c in corr_results:
-                            add_correlation(inv_id, c["indicator_a"], c["indicator_b"], c["relationship"], c["strength"])
-                        state.correlations.extend(corr_results)
-                        log_audit_event(inv_id, state.steps_taken, "mid_loop_correlation", {"correlations": corr_results})
+                return _finalize_result(
+                    inv_id, state, risk_level, confidence, summary, escalate, duration_ms,
+                )
+
+            else:
+                # Unknown action — reject
+                log_audit_event(inv_id, state.steps_taken, "unknown_action", {"action": action_type})
+                state.history.append({
+                    "role": "user",
+                    "content": f"Unknown action '{action_type}'. Use 'call_tool' or 'final'.",
+                })
 
             state.steps_taken += 1
 
+    except (AuthenticationError, ModelNotFoundError, RateLimitError, TimeoutError) as exc:
+        update_investigation(inv_id, status="escalated")
+        log_audit_event(inv_id, state.steps_taken, "investigation_error", {"error": str(exc)})
+        return {
+            "investigation_id": inv_id,
+            "error": str(exc),
+            "steps_taken": state.steps_taken,
+            "risk_level": "Inconclusive",
+            "confidence": 0.0,
+            "summary": f"Investigation failed due to API error: {exc}",
+            "escalation_required": True,
+        }
     except Exception as exc:
         update_investigation(inv_id, status="escalated")
         log_audit_event(inv_id, state.steps_taken, "investigation_error", {"error": str(exc)})
@@ -324,6 +475,10 @@ Extract all indicators and determine the appropriate tools to use. Start with th
             "investigation_id": inv_id,
             "error": str(exc),
             "steps_taken": state.steps_taken,
+            "risk_level": "Inconclusive",
+            "confidence": 0.0,
+            "summary": f"Investigation failed: {exc}",
+            "escalation_required": True,
         }
 
     return _finalize_result(inv_id, state, "Inconclusive", 0.1, "Investigation completed without sufficient evidence.", True, 0)
@@ -386,7 +541,6 @@ def _finalize_result(
                          summary=summary, status=status)
 
     # Final correlation pass
-    # Note: correlations already added mid-loop, but we can add any remaining
     risk_summary = generate_risk_summary(risk_level, confidence, state.evidence, state.correlations, state.tool_calls_log)
 
     log_audit_event(inv_id, state.steps_taken, "investigation_concluded", {
@@ -405,6 +559,7 @@ def _finalize_result(
         "evidence_count": len(state.evidence),
         "correlation_count": len(state.correlations),
         "tool_calls": state.tool_calls_log,
+        "steps_taken": state.steps_taken,
         "risk_summary": risk_summary,
         "escalation_required": escalate,
     }

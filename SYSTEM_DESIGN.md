@@ -4,7 +4,7 @@
 
 ### Functional Requirements
 - **Email Threat Analysis**: Upload/paste email content → extract headers, URLs, domains → classify as phishing/legitimate/inconclusive with evidence.
-- **URL Investigation**: Validate URL → extract domain/subdomain → query threat intel (URLhaus, PhishTank) → assess risk.
+- **URL Investigation**: Validate URL → extract domain/subdomain → query threat intel (URLhaus, OpenPhish) → assess risk.
 - **IP/Domain Intelligence**: Check IP reputation via AbuseIPDB/VirusTotal; resolve domain → check MX/DNS records.
 - **Network Log Analyzer**: Parse uploaded CSV (CIC-IDS2017 format) → detect anomalous flows → classify attack type.
 - **Agentic Investigation**: Multi-step loop where Tiny Aya Global selects tools, executes them, correlates results, and escalates when uncertain.
@@ -23,9 +23,9 @@
 
 ### Constraints
 - Python 3.10+ / Streamlit frontend
-- Tiny Aya Global as primary LLM via Cohere V2 API
+- Tiny Aya Global as primary LLM via Hugging Face Router (OpenAI-compatible)
 - SQLite for persistence (no external DB dependency)
-- No MCP — pure Python tool-calling loop
+- No MCP — pure Python JSON-action tool-calling loop
 - Hackathon timeline: ~2 weeks to working demo
 
 ---
@@ -216,37 +216,75 @@ ToolDefinition(
 )
 ```
 
-### 3.3 Agentic Loop Design
+### 3.3 Agentic Loop Design (JSON-Action Loop)
 
-The investigation agent uses a Cohere V2 tool-calling loop:
+Tiny Aya Global via Hugging Face Inference Providers does **not** support
+native tool calling. The agent uses an explicit **JSON-action loop** instead:
 
 ```python
-async def run_investigation(request: str) -> InvestigationResult:
+def run_investigation(request: str) -> InvestigationResult:
     state = AgentState(investigation_id=generate_id(), history=[])
     
     while not state.done and state.steps < MAX_STEPS:
-        # LLM decides next action
-        response = await llm.complete(
+        # LLM returns structured JSON-action text (no native tools parameter)
+        response = llm.messages_create(
+            model=HF_MODEL_ID,
             messages=state.history,
-            tools=TOOL_REGISTRY,
-            max_tokens=1024
+            max_tokens=1024,
         )
         
-        if response.stop_reason == "end_turn":
-            break
+        # Parse JSON action from model text (handles Markdown code fences)
+        action = llm.extract_json_action(response.text)
+        
+        if action is None:
+            # Reject malformed JSON, request corrected response
+            state.history.append(invalid_format_message)
+            state.steps += 1
+            continue
+        
+        if action["action"] == "call_tool":
+            # Validate tool name and arguments against registry
+            tool_result = execute_tool(action["tool_name"], action["arguments"])
+            state.history.append(tool_result_as_user_message)
+            log_tool_call(state.investigation_id, action, tool_result)
             
-        if response.stop_reason == "tool_use":
-            tool_result = await execute_tool(response.tool_use)
-            state.history.append(tool_result_as_message)
-            log_tool_call(state.investigation_id, response.tool_use, tool_result)
-            
-            # Agent evaluates whether to continue or conclude
-            should_continue = await llm.should_continue(state.history)
-            if not should_continue:
-                break
+        elif action["action"] == "final":
+            return generate_report(action["conclusion"])
+        
+        state.steps += 1
     
-    return generate_report(state)
+    # Max steps reached without conclusion → Inconclusive + escalate
+    return generate_report(inconclusive_conclusion, escalate=True)
 ```
+
+The model is instructed via system prompt to return exactly one JSON action per response:
+
+**Tool request:**
+```json
+{
+  "action": "call_tool",
+  "tool_name": "url_analyzer",
+  "arguments": {"url": "https://example.com"},
+  "reason": "Explain why this tool is required"
+}
+```
+
+**Final response:**
+```json
+{
+  "action": "final",
+  "conclusion": {
+    "risk_level": "Low|Medium|High|Critical|Inconclusive",
+    "confidence": 0.0-1.0,
+    "summary": "Brief explanation of findings",
+    "escalate": true|false
+  }
+}
+```
+
+All tool names and arguments are validated against the tool registry's JSON Schema
+before execution. Only registered tools are callable through `execute_tool()` —
+the model can never execute arbitrary code.
 
 ### 3.4 Threat Intelligence Integration Pattern
 
@@ -350,7 +388,7 @@ Thresholds are configurable constants, not learned parameters.
 | URL Investigation | ✅ **Implemented & tested** | `tools/url_analyzer.py` + `models/url_classifier.joblib` (99.6% test accuracy) |
 | IP & Domain Intelligence | ✅ **Implemented** | `tools/ip_analyzer.py` + WHOIS/DNS integration |
 | Network Log Analyzer | ✅ **Implemented** | `tools/network_analyzer.py` (CIC-IDS2017 CSV parsing) |
-| Threat Intel (4 sources) | ✅ **Implemented** | URLhaus, PhishTank, AbuseIPDB, VirusTotal clients with caching |
+| Threat Intel (4 sources) | ✅ **Implemented** | URLhaus, OpenPhish, AbuseIPDB, VirusTotal clients with caching |
 | Tiny Aya LLM Client | ✅ **Implemented** | Cohere V2 SDK (`cohere.ClientV2`) with tool calling |
 | Agentic Investigation | ✅ **Implemented** | 12-step tool-calling loop with evidence gate |
 | Threat Correlation | ✅ **Implemented** | LLM-driven mid-loop + final correlation |
@@ -370,8 +408,8 @@ Thresholds are configurable constants, not learned parameters.
 |---|---|---|
 | Tiny Aya native tool calling | ⚠️ **Not API-tested** | Requires valid Tiny Aya API key |
 | Network classifier training | ⚠️ **Code ready, not trained** | No CIC-IDS2017 CSVs available locally |
-| AgentTune fine-tuning | 📝 **Planned** | Framework ready, needs baseline trajectories |
-| AuditKIT evaluation | 📝 **Framework ready** | Code ready, needs baseline + improved runs |
+| AgentTune fine-tuning | ✅ **Implemented** | `evaluation/agenttune/train_agent.py` — genuine `agenttune.train_agentic` integration; not yet executed (requires GPU/time) |
+| AuditKIT evaluation | ✅ **Implemented** | `evaluation/auditkit/run_baseline.py`, `run_improved.py`, `compare_results.py` — genuine `auditkit.evaluate` integration |
 | Network classifier test accuracy | ❓ **Unknown** | No CIC-IDS2017 data to train/test |
 
 ---
@@ -404,6 +442,111 @@ streamlit run app.py
 
 ---
 
+## 8. AgentTune — Fine-Tuning Pipeline
+
+### 8.1 Architecture
+
+AgentTune fine-tuning is implemented in `evaluation/agenttune/train_agent.py` using the
+supported `agenttune.train_agentic` API. The pipeline:
+
+1. **Trajectory collection** — Runs the Tiny Aya investigation agent on each held-out
+   scenario, recording every tool call, argument, result, evidence item, and conclusion
+   as a structured `InvestigationTrajectory` (`trajectory_collector.py`).
+2. **Trajectory validation** — Validates each trajectory against required fields, tool
+   schemas, veracity values, risk levels, and completion statuses
+   (`trajectory_validator.py`).
+3. **Reward computation** — Computes transparent, auditable reward components for tool
+   selection, argument accuracy, evidence grounding, task completion, classification
+   accuracy, escalation accuracy, no duplicate calls, and no unsupported conclusions
+   (`agenttune_rewards.py`).
+4. **Train/val/test split** — Deterministic 70/15/15 split by scenario ID, exported as
+   JSONL (`trajectory_adapter.py`).
+5. **AgentTune training** — Calls `agenttune.train_agentic(algorithm="grpo", ...)` with
+   the reward functions and datasets, saving checkpoints + LoRA adapters to disk
+   (`train_agent.py`).
+6. **Reproducible config** — `training_config.yaml` pins algorithm, model, hyperparameters,
+   LoRA config, hardware (CPU/GPU auto-detected), and seed (42).
+
+### 8.2 Reward Functions
+
+| Reward | Definition |
+|--------|-----------|
+| `tool_selection` | Intersection of selected vs expected tools / expected count |
+| `argument_accuracy` | Fraction of expected tool calls with correct arguments |
+| `evidence_grounding` | Confirmed evidence ratio; High/Critical requires confirmed evidence |
+| `task_completion` | 1.0 completed/escalated, 0.5 max_steps, 0.0 failed |
+| `classification_accuracy` | Exact match = 1.0; adjacent risk levels get partial credit |
+| `escalation_accuracy` | 1.0 if escalation decision matches ground truth |
+| `no_duplicate_calls` | 0.0 if any identical tool call repeats |
+| `no_unsupported_conclusions` | 0.0 if High/Critical without confirmed evidence |
+
+### 8.3 Hardware Configuration
+
+- `device: auto` — uses CUDA if available, otherwise CPU
+- `mixed_precision: fp32` on CPU, `bf16`/`fp16` on GPU
+- `gradient_checkpointing: false` on CPU (memory not a constraint at this scale)
+
+### 8.4 Status
+
+Implemented but **not yet executed** — training requires `agenttune` + `trl` and a
+compatible backend, plus GPU time for meaningful results. No checkpoints are fabricated.
+
+---
+
+## 9. AuditKIT — Evaluation Framework
+
+### 9.1 Architecture
+
+AuditKIT evaluation is implemented in `evaluation/auditkit/` using the supported
+`auditkit.evaluate` API. The pipeline:
+
+1. **Baseline evaluation** — Runs the Tiny Aya agent on all 8 held-out scenarios,
+   constructs AuditKIT `Sample` objects with expected outputs, and calls
+   `auditkit.evaluate(dataset=samples, model="baseline", scorers=[...])`
+   (`run_baseline.py`).
+2. **Improved evaluation** — Runs the AgentTune-trained agent on the identical
+   held-out scenarios. If no trained model exists, reports
+   `improved_model_unavailable` and falls back to the baseline agent — no false
+   improvement claims (`run_improved.py`).
+3. **Paired comparison** — Compares baseline vs improved metrics using identical
+   scenarios, computing deltas and statistical significance
+   (`compare_results.py`).
+4. **Reporting** — Exports raw outputs, metrics, and comparison reports in JSON, CSV,
+   Markdown, and HTML (`export_report.py`).
+
+### 9.2 Custom Scorers
+
+| Scorer | Definition |
+|--------|-----------|
+| `tool_selection_accuracy` | Intersection / expected tools |
+| `argument_accuracy` | Expected args present in matching actual calls |
+| `task_completion_rate` | 1.0 completed/escalated, 0.5 max_steps, 0.0 failed |
+| `classification_performance` | Exact match = 1.0; adjacent partial credit |
+| `evidence_grounding` | Confirmed evidence ratio; High/Critical requires confirmed |
+| `tool_call_efficiency` | Actual vs expected call count ratio |
+| `escalation_accuracy` | Escalation decision matches ground truth |
+| `tool_call_f1` | F1 over tool selection |
+| `evidence_grounding_rate` | Confirmed / total evidence |
+| `tool_call_accuracy` | Combined tool selection + argument accuracy |
+
+### 9.3 Bug Fixes
+
+- **Argument accuracy:** Fixed double-counting bug where `total` was incremented
+  inside the `for...else` block, causing incorrect scores.
+- **Evidence grounding:** Fixed reference to non-existent `risk_level` field on
+  evidence items; now uses the `risk_level` parameter correctly.
+- **Escalation field mismatch:** `run_improved.py` now consistently reports
+  `improved_model_unavailable` instead of falsely labeling baseline results as
+  "improved".
+
+### 9.4 Status
+
+Implemented. Baseline evaluation runs via `auditkit.evaluate` (with manual fallback).
+Improved evaluation reports `improved_model_unavailable` until AgentTune training
+produces a trained adapter.
+
+---
+
 ## Appendix: Module-to-File Mapping
 
 | Module | File(s) |
@@ -418,7 +561,7 @@ streamlit run app.py
 | Response Generator | `agents/response_generator.py` |
 | LLM Client | `agents/llm_client.py` |
 | Threat Intel: URLhaus | `integrations/threat_intelligence/urlhaus.py` |
-| Threat Intel: PhishTank | `integrations/threat_intelligence/phishtank.py` |
+| Threat Intel: OpenPhish | `integrations/threat_intelligence/openphish.py` |
 | Threat Intel: AbuseIPDB | `integrations/threat_intelligence/abuseipdb.py` |
 | Threat Intel: VirusTotal | `integrations/threat_intelligence/virustotal.py` |
 | Database | `database/db.py` + `database/schema.sql` |

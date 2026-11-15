@@ -52,20 +52,18 @@ def argument_accuracy(
         exp_args = exp_call.get("arguments", {})
 
         # Find matching actual call
+        found = False
         for act_call in actual_calls:
             if act_call.get("tool") == exp_call.get("tool"):
-                act_args = act_call.get("arguments", {})
+                act_args = act_call.get("arguments", {}) or {}
                 # Check if all expected args are present with correct values
                 exp_arg_items = set(exp_args.items())
-                act_arg_items = set(act_args.items()) if isinstance(act_call.get("arguments"), dict) else set()
+                act_arg_items = set(act_args.items()) if isinstance(act_args, dict) else set()
 
                 if exp_arg_items.issubset(act_arg_items):
                     matches += 1
-                total = max(total, 1)
+                found = True
                 break
-        else:
-            # No matching tool call found
-            pass
         total += 1
 
     return matches / total if total > 0 else 0.0
@@ -127,12 +125,13 @@ def evidence_grounding(
     if total == 0:
         return 0.0
 
-    if evidence and evidence[-1].get("risk_level") in ["High", "Critical"]:
-        # High risk requires confirmed evidence
-        if confirmed == 0:
-            return 0.0
+    score = confirmed / total
 
-    return confirmed / total
+    # High/Critical risk requires confirmed evidence
+    if risk_level in ("High", "Critical") and confirmed == 0:
+        return 0.0
+
+    return score
 
 
 def tool_call_efficiency(
@@ -297,6 +296,8 @@ def create_scorers():
             }
 
             return scorers
+        except Exception:
+            pass
 
     # Fallback: return function references
     return {
@@ -486,16 +487,18 @@ if AUDITKIT_AVAILABLE:
 
         def get_scorer_names():
             return list(CUSTOM_SCORERS.keys())
+    except Exception:
+        pass
 
-    else:
-        # Fallback
-        CUSTOM_SCORERS = {}
-        def get_scorer(name: str):
-            return None
-        def get_all_scorers():
-            return []
-        def get_scorer_names():
-            return []
+else:
+    # Fallback
+    CUSTOM_SCORERS = {}
+    def get_scorer(name: str):
+        return None
+    def get_all_scorers():
+        return []
+    def get_scorer_names():
+        return []
 
 
 def get_all_scorers():
@@ -503,9 +506,21 @@ def get_all_scorers():
     if AUDITKIT_AVAILABLE:
         try:
             return list(CUSTOM_SCORERS.values())
-        except:
+        except Exception:
             pass
-    return []
+    # Fallback: return plain function references
+    return [
+        tool_selection_accuracy,
+        argument_accuracy,
+        task_completion_rate,
+        classification_performance,
+        evidence_grounding,
+        tool_call_efficiency,
+        escalation_accuracy,
+        tool_call_f1,
+        evidence_grounding_rate,
+        tool_call_accuracy,
+    ]
 
 
 def get_scorer(name: str):
@@ -513,9 +528,22 @@ def get_scorer(name: str):
     if AUDITKIT_AVAILABLE:
         try:
             return CUSTOM_SCORERS.get(name)
-        except:
+        except Exception:
             pass
-    return None
+    # Fallback: return plain function reference
+    fallback = {
+        "tool_selection_accuracy": tool_selection_accuracy,
+        "argument_accuracy": argument_accuracy,
+        "task_completion_rate": task_completion_rate,
+        "classification_performance": classification_performance,
+        "evidence_grounding": evidence_grounding,
+        "tool_call_efficiency": tool_call_efficiency,
+        "escalation_accuracy": escalation_accuracy,
+        "tool_call_f1": tool_call_f1,
+        "evidence_grounding_rate": evidence_grounding_rate,
+        "tool_call_accuracy": tool_call_accuracy,
+    }
+    return fallback.get(name)
 
 
 def get_scorer_names() -> List[str]:

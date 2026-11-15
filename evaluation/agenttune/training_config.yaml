@@ -1,18 +1,18 @@
 # AgentTune Training Configuration for ThreatLens AI
+# Single source of truth for reproducible fine-tuning.
 
 # Algorithm Configuration
 algorithm: "grpo"  # Options: grpo, dpo, ppo, rloo, bco
 
-# Model Configuration
-base_model: "tiny-aya-global"
-model_revision: "main"
+# Model Configuration (Hugging Face Router — Tiny Aya Global)
+base_model: "CohereLabs/tiny-aya-global:cohere"
 
 # Training Parameters
 learning_rate: 1e-5
-batch_size: 4
+batch_size: 2
 num_epochs: 3
 max_seq_length: 2048
-gradient_accumulation_steps: 4
+gradient_accumulation_steps: 8
 
 # LoRA Configuration
 lora_rank: 16
@@ -31,40 +31,26 @@ test_data_path: "artifacts/agenttune/trajectories/test.jsonl"
 
 # Output Configuration
 output_dir: "artifacts/agenttune/checkpoints"
-logging_steps: 10
-save_steps: 50
-eval_steps: 50
+logging_steps: 5
+save_steps: 25
+eval_steps: 25
 
-# Reward Weights (customizable)
+# Reward Weights (customizable — positive rewards only; penalties handled internally)
 reward_weights:
   tool_selection: 1.0
   argument_accuracy: 1.0
-  tool_ordering: 0.5
-  execution_success: 1.0
   evidence_grounding: 1.5
-  risk_classification: 2.0
-  escalation_decision: 1.0
   task_completion: 1.5
-  step_efficiency: 0.5
+  classification_accuracy: 2.0
+  escalation_accuracy: 1.5
   no_duplicate_calls: 0.5
-  no_repeated_failures: 0.5
   no_unsupported_conclusions: 1.0
-  correct_escalation: 1.5
-
-  # Penalties
-  invalid_tool: -2.0
-  invalid_arguments: -1.5
-  duplicate_call: -1.0
-  repeated_failure: -1.0
-  unsupported_conclusion: -2.0
-  incorrect_escalation: -2.0
-  excessive_steps: -0.5
-  false_positive_high_risk: -3.0
 
 # Hardware Configuration
+# device: "auto" (cuda if available, else cpu). mixed_precision: fp32 on CPU, bf16/fp16 on GPU.
 device: "auto"
-mixed_precision: "bf16"
-gradient_checkpointing: true
+mixed_precision: "fp32"
+gradient_checkpointing: false
 
 # Experiment Tracking
 experiment_name: "threatlens-agenttune"
@@ -74,3 +60,6 @@ tags:
   - cybersecurity
   - agenttune
   - tiny-aya
+
+# Reproducibility
+seed: 42

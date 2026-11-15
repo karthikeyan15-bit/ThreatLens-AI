@@ -54,7 +54,7 @@ def extract_indicators(text: str) -> list[Indicator]:
 
     for match in DOMAIN_RE.finditer(text):
         domain = match.group(1)
-        if domain not in seen and not any(domain.endswith(s) for s in (".com", ".org", ".net")):
+        if domain not in seen:
             seen.add(domain)
             results.append(Indicator("domain", domain, 0.6))
 
@@ -70,7 +70,8 @@ def determine_request_type(text: str, indicators: list[Indicator]) -> str:
         return "url"
     if len(indicators) == 1 and indicators[0].type in ("ip", "domain"):
         return "ip"
-    if any("csv" in text.lower() or "network" in text.lower() for _ in indicators):
+    text_lower = text.lower()
+    if "csv" in text_lower or "network" in text_lower or "flow" in text_lower:
         return "network"
     if len(types_found) > 1:
         return "multi"

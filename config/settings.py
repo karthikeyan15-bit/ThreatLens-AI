@@ -17,26 +17,26 @@ MODELS_DIR = PROJECT_ROOT / "models"
 DATABASE_PATH = os.getenv("DATABASE_PATH", str(PROJECT_ROOT / "database" / "threatlens.db"))
 REPORTS_DIR = PROJECT_ROOT / "reports"
 
-# ─── Tiny Aya / Cohere V2 ────────────────────────────────────────────────
-TINY_AYA_API_KEY = os.getenv("TINY_AYA_API_KEY", "")
-TINY_AYA_BASE_URL = os.getenv("TINY_AYA_BASE_URL", "https://api.cohere.com/v2")
-TINY_AYA_MODEL = os.getenv("TINY_AYA_MODEL", "tiny-aya-global")
-TINY_AYA_TEMPERATURE = float(os.getenv("TINY_AYA_TEMPERATURE", "0.2"))
-TINY_AYA_MAX_TOKENS = int(os.getenv("TINY_AYA_MAX_TOKENS", "2048"))
+# ─── Hugging Face Router (active LLM provider) ────────────────────────────
+HF_MODEL_ID = os.getenv("HF_MODEL_ID", "CohereLabs/tiny-aya-global:cohere")
+HF_PROVIDER = os.getenv("HF_PROVIDER", "cohere")
+HF_TOKEN = os.getenv("HF_TOKEN", "")
 
-# Tiny Aya model variants verified against the Cohere V2 API.
-# Only model IDs that Cohere actually serves should be listed here.
-TINY_AYA_MODELS = {
-    "tiny-aya-global": "Tiny Aya Global — General purpose",
-    "tiny-aya-fire": "Tiny Aya Fire — High creativity",
-    "tiny-aya-earth": "Tiny Aya Earth — Grounded reasoning",
-    "tiny-aya-water": "Tiny Aya Water — Fluid adaptability",
-}
+# Hugging Face Inference Endpoints base URL (OpenAI-compatible)
+HF_BASE_URL = os.getenv("HF_BASE_URL", "https://router.huggingface.co/v1")
+
+# Default generation parameters
+HF_TEMPERATURE = float(os.getenv("HF_TEMPERATURE", "0.2"))
+HF_MAX_TOKENS = int(os.getenv("HF_MAX_TOKENS", "2048"))
 
 # Agent version → model mapping for baseline vs improved evaluation.
+# NOTE: Both baseline and improved currently use the same HF_MODEL_ID because
+# separate model variants are not independently available/tested on the HF Router.
+# AgentTune fine-tuning has NOT been completed. Do not claim performance
+# improvement from these configurations.
 AGENT_MODELS = {
-    "baseline": "tiny-aya-global",
-    "improved": "tiny-aya-earth",
+    "baseline": HF_MODEL_ID,
+    "improved": HF_MODEL_ID,
 }
 
 # ─── ML model artifacts ───────────────────────────────────────────────────
@@ -57,7 +57,7 @@ MODEL_METRICS_FILES = {
 # ─── Threat intelligence ──────────────────────────────────────────────────
 THREAT_INTEL_KEYS = {
     "urlhaus": os.getenv("URLHAUS_API_KEY", ""),
-    "phishtank": os.getenv("PHishtank_API_KEY", ""),
+    "openphish": os.getenv("OPENPHISH_API_KEY", ""),  # OpenPhish Community Feed requires no key
     "abuseipdb": os.getenv("ABUSEIPDB_API_KEY", ""),
     "virustotal": os.getenv("VIRUSTOTAL_API_KEY", ""),
 }

@@ -138,31 +138,75 @@ def run_auditkit_evaluation(
 
     # Run AuditKIT evaluation
     try:
-        scorers = [
-            "tool_selection_accuracy",
-            "argument_accuracy",
-            "task_completion_rate",
-            "classification_performance",
-            "evidence_grounding",
-            "tool_call_efficiency",
-            "escalation_accuracy",
-            "tool_call_f1",
-            "evidence_grounding_rate",
-            "tool_call_accuracy",
-        ]
+        # Get custom scorer functions (wrapped for AuditKIT)
+        scorer_fns = get_all_scorers()
+        scorer_names = get_scorer_names()
 
-        config = RunConfig(
-            experiment_name="threatlens-baseline",
-            tags=["baseline", "threatlens"]
+        print(
+            f"Running AuditKIT evaluate with {len(samples)} samples and {len(scorer_names)} scorers..."
         )
 
-        # Note: This would need the actual AuditKIT evaluate function
-        # For now, we compute metrics manually
-        return compute_manual_metrics(results)
+        config = RunConfig(
+            experiment_name=experiment_name,
+            tags=["baseline", "threatlens"],
+        )
+
+        run_result = evaluate(
+            dataset=samples,
+            model="baseline",  # baseline agent
+            scorers=scorer_fns,
+            config=config,
+            verbose=True,
+        )
+
+        # Extract headline metrics
+        headline = run_result.headline if hasattr(run_result, "headline") else {}
+        stats = run_result.stats if hasattr(run_result, "stats") else {}
+
+        metrics = {
+            "status": "completed",
+            "engine": "auditkit",
+            "experiment_name": experiment_name,
+            "headline": headline,
+            "stats": stats,
+            "total_scenarios": len(samples),
+            "failed_scenarios": len([r for r in results if r.get("failed")]),
+            "per_scenario": [],
+        }
+
+        # Per-scenario details from predictions
+        predictions = getattr(run_result, "predictions", []) or []
+        for pred in predictions:
+            metrics["per_scenario"].append(
+                {
+                    "scenario_id": getattr(pred, "sample_id", None)
+                    or getattr(pred, "id", None),
+                    "scores": getattr(pred, "scores", {}),
+                }
+            )
+
+        # Save AuditKIT raw results
+        auditkit_path = output_dir / "auditkit_results.json"
+        with open(auditkit_path, "w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "headline": headline,
+                    "stats": stats,
+                    "config": config.to_dict()
+                    if hasattr(config, "to_dict")
+                    else {},
+                },
+                f,
+                indent=2,
+                default=str,
+            )
+
+        print(f"\nAuditKIT evaluation completed. Headline: {headline}")
+        return metrics
 
     except Exception as e:
-        print(f"AuditKIT evaluation error: {e}")
-        return {"status": "error", "error": str(e)}
+        print(f"AuditKIT evaluation error: {e} — falling back to manual metrics.")
+        return compute_manual_metrics(results)
 
 
 def compute_manual_metrics(results: List[Dict]) -> Dict:

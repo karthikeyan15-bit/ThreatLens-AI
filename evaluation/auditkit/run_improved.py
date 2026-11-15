@@ -17,11 +17,11 @@ def load_improved_model(model_path: str) -> Any:
     """
     Load the improved model from AgentTune training.
 
-    This would load a fine-tuned model or adapter from AgentTune training.
-    Expected format: Hugging Face model with adapter or merged model.
+    NOTE: AgentTune fine-tuning has NOT been completed. No trained model
+    artifacts exist. This function always returns None.
     """
-    # This is a placeholder - actual implementation depends on AgentTune output format
-    # For now, return None to indicate model not available
+    print(f"WARNING: No improved model available at {model_path}")
+    print("AgentTune fine-tuning has NOT been completed.")
     return None
 
 
@@ -29,18 +29,13 @@ def create_improved_agent(model_path: Optional[str] = None):
     """
     Create an agent using the improved model.
 
-    This wraps the investigation agent to use the fine-tuned model.
+    NOTE: AgentTune fine-tuning has NOT been completed. No trained model
+    artifacts exist. This function falls back to the baseline agent.
     """
-    if model_path:
-        # Load fine-tuned model
-        pass
-    else:
-        # Fallback to baseline with modified prompts
-        pass
+    print("WARNING: No improved model available. Using baseline agent.")
 
     def improved_agent(request: str) -> Dict:
-        # This would use the fine-tuned model
-        # For now, fall back to baseline
+        # Fall back to baseline agent - no improved model available
         from agents.investigation_agent import run_investigation
         return run_investigation(request)
 
@@ -55,27 +50,35 @@ def run_improved_evaluation(
 ) -> Dict:
     """
     Run evaluation with the improved (AgentTune-trained) model.
+
+    NOTE: AgentTune fine-tuning has NOT been completed. This function
+    falls back to the baseline agent and clearly marks results as
+    "improved_model_unavailable" so that no false improvement claims
+    are made.
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # For now, use baseline agent (will be replaced when improved model available)
     from evaluation.auditkit.run_baseline import run_baseline_evaluation
 
     print("Running improved model evaluation...")
-    print("Note: Using baseline agent as improved model not yet available")
+    print("WARNING: AgentTune fine-tuning has NOT been completed.")
+    print("Using baseline agent as fallback - no improved model available.")
 
     # Run with same scenarios as baseline
     results = run_baseline_evaluation(scenario_ids=scenario_ids, output_dir=output_dir)
 
-    # Mark as improved for comparison
+    # Mark clearly as fallback - NOT an improved model
     for result in results["results"]:
-        result["model_version"] = "improved"
+        result["model_version"] = "improved_model_unavailable"
+        result["improved_model_available"] = False
 
     return {
         "results": results["results"],
         "output_dir": str(output_dir),
-        "model_version": "improved"
+        "model_version": "improved_model_unavailable",
+        "improved_model_available": False,
+        "note": "AgentTune fine-tuning not completed. Results use baseline agent."
     }
 
 
