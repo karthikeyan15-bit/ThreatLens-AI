@@ -12,6 +12,12 @@ import tldextract
 from .tool_registry import ToolDefinition, register_tool
 from .url_transformers import extract_url_features
 
+try:
+    from huggingface_hub import hf_hub_download
+    HF_HUB_AVAILABLE = True
+except ImportError:
+    HF_HUB_AVAILABLE = False
+
 
 SUSPICIOUS_TLDS = {".xyz", ".top", ".club", ".work", ".site", ".buzz", ".racing", ".gq", ".ml", ".cf", ".tk"}
 SUSPICIOUS_PATH_PATTERNS = [
@@ -25,17 +31,38 @@ SUSPICIOUS_PATH_PATTERNS = [
 class URLClassifier:
     """Wrapper for the trained URL phishing/malicious classifier."""
 
+    HF_REPO_ID = "karthikeyan1509/ThreatLens_AI"
+    MODEL_FILENAME = "models/url_classifier.joblib"
+
     def __init__(self):
         self.pipeline = None
         self._load_model()
 
     def _load_model(self):
-        """Load the trained classifier from disk."""
+        """Load the trained classifier from disk or download from Hugging Face Hub."""
         model_path = Path(__file__).parent.parent / "models" / "url_classifier.joblib"
+
         if model_path.exists():
             self.pipeline = joblib.load(model_path)
-        else:
-            print(f"Warning: URL model not found at {model_path}")
+            print(f"Loaded URL classifier from local path: {model_path}")
+            return
+
+        # Try to download from Hugging Face Hub
+        if HF_HUB_AVAILABLE:
+            try:
+                print(f"Downloading URL classifier from Hugging Face Hub...")
+                downloaded_path = hf_hub_download(
+                    repo_id=self.HF_REPO_ID,
+                    filename=self.MODEL_FILENAME,
+                    repo_type="space"
+                )
+                self.pipeline = joblib.load(downloaded_path)
+                print(f"Successfully downloaded and loaded URL classifier from Hugging Face Hub")
+                return
+            except Exception as e:
+                print(f"Failed to download from Hugging Face Hub: {e}")
+
+        print(f"Warning: URL model not found locally and could not download from Hugging Face Hub")
 
     def predict(self, url: str) -> Optional[dict]:
         """Predict phishing/malicious probability for a URL."""

@@ -8,6 +8,12 @@ from typing import Optional
 
 from .tool_registry import ToolDefinition, register_tool
 
+try:
+    from huggingface_hub import hf_hub_download
+    HF_HUB_AVAILABLE = True
+except ImportError:
+    HF_HUB_AVAILABLE = False
+
 
 HEADERS_TO_EXTRACT = ["From", "To", "Subject", "Date", "Reply-To", "X-Originating-IP"]
 
@@ -28,17 +34,38 @@ PHISHING_KEYWORDS = {
 class EmailClassifier:
     """Wrapper for the trained email phishing classifier."""
 
+    HF_REPO_ID = "karthikeyan1509/ThreatLens_AI"
+    MODEL_FILENAME = "models/email_classifier.joblib"
+
     def __init__(self):
         self.pipeline = None
         self._load_model()
 
     def _load_model(self):
-        """Load the trained classifier from disk."""
+        """Load the trained classifier from disk or download from Hugging Face Hub."""
         model_path = Path(__file__).parent.parent / "models" / "email_classifier.joblib"
+
         if model_path.exists():
             self.pipeline = joblib.load(model_path)
-        else:
-            print(f"Warning: Model not found at {model_path}, falling back to heuristic")
+            print(f"Loaded email classifier from local path: {model_path}")
+            return
+
+        # Try to download from Hugging Face Hub
+        if HF_HUB_AVAILABLE:
+            try:
+                print(f"Downloading email classifier from Hugging Face Hub...")
+                downloaded_path = hf_hub_download(
+                    repo_id=self.HF_REPO_ID,
+                    filename=self.MODEL_FILENAME,
+                    repo_type="space"
+                )
+                self.pipeline = joblib.load(downloaded_path)
+                print(f"Successfully downloaded and loaded email classifier from Hugging Face Hub")
+                return
+            except Exception as e:
+                print(f"Failed to download from Hugging Face Hub: {e}")
+
+        print(f"Warning: Model not found locally and could not download from Hugging Face Hub, falling back to heuristic")
 
     def predict(self, text: str) -> dict:
         """Predict phishing probability for an email."""
