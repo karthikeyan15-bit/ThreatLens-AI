@@ -56,7 +56,7 @@ def execute_tool(tool_name: str, arguments: dict) -> dict[str, Any]:
     if not tool:
         return {"success": False, "error": f"Tool '{tool_name}' not found", "data": {}}
     try:
-        result = tool.func(**arguments)
+        result = tool.func(arguments)
         return {"success": True, "data": result}
     except Exception as e:
         return {"success": False, "error": str(e), "data": {}}

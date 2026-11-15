@@ -1,7 +1,6 @@
 """Benchmark runner for ThreatLens AI evaluation."""
 
 import json
-import uuid
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +10,15 @@ from agents.investigation_agent import run_investigation
 
 
 SCENARIOS_DIR = Path(__file__).parent.parent / "datasets" / "evaluation"
+
+# Agent version → model name mapping.
+# "baseline" uses the default Tiny Aya model. "improved" uses a different
+# model variant (e.g. tiny-aya-earth) so that baseline vs improved is a real
+# comparison, not the same agent running twice.
+AGENT_MODELS = {
+    "baseline": "tiny-aya-global",
+    "improved": "tiny-aya-earth",
+}
 
 
 def load_scenarios() -> list[dict]:
@@ -26,15 +34,20 @@ def run_single_scenario(scenario: dict, agent_version: str = "baseline", api_key
     request = scenario["request"]
     reference = scenario["reference"]
 
-    actual_result = run_investigation(request, api_key=api_key)
+    # Select the model for this agent version so baseline and improved differ
+    model = AGENT_MODELS.get(agent_version, AGENT_MODELS["baseline"])
+
+    actual_result = run_investigation(request, api_key=api_key, model=model)
 
     metrics = compute_metrics(actual_result, reference)
     metrics["agent_version"] = agent_version
+    metrics["model"] = model
     metrics["scenario_id"] = scenario["id"]
 
     save_evaluation_run({
         "agent_version": agent_version,
         "scenario_id": scenario["id"],
+        "model": model,
         **metrics,
         "actual_output": actual_result,
         "reference_output": reference,
@@ -64,6 +77,7 @@ def run_all_scenarios(agent_version: str = "baseline", api_key: str | None = Non
 
     return {
         "agent_version": agent_version,
+        "model": AGENT_MODELS.get(agent_version, AGENT_MODELS["baseline"]),
         "total_scenarios": len(scenarios),
         "aggregated_metrics": aggregated,
         "per_scenario": results,

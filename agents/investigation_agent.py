@@ -159,7 +159,7 @@ If no clear correlations exist, return an empty array."""
         return []
 
 
-def run_investigation(request: str, api_key: str | None = None) -> dict:
+def run_investigation(request: str, api_key: str | None = None, model: str = "tiny-aya-global") -> dict:
     """Run a full agentic investigation and return structured results."""
     client = get_llm_client()
 
@@ -204,7 +204,7 @@ Extract all indicators and determine the appropriate tools to use. Start with th
             start_time = time.time()
 
             response = client.messages_create(
-                model="tiny-aya-global",
+                model=model,
                 max_tokens=1024,
                 messages=state.history,
                 tools=serialize_tools(),

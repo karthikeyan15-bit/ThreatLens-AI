@@ -403,13 +403,20 @@ def render_review_reports():
                     inv_id,
                 )
                 ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-                out_path = f"reports/{inv_id}_{ts}.html"
-                save_pdf(html, out_path)
-                with open(out_path, "rb") as f:
+                pdf_path = f"reports/{inv_id}_{ts}.pdf"
+                html_path = f"reports/{inv_id}_{ts}.html"
+                result = save_pdf(html, pdf_path)
+                # Fallback: if PDF failed, offer the HTML report
+                download_path = result.get("path") or html_path
+                ext = "pdf" if download_path.endswith(".pdf") else "html"
+                mime_type = "application/pdf" if ext == "pdf" else "text/html"
+                with open(download_path, "rb") as f:
                     st.download_button(
                         "Download Report", data=f,
-                        file_name=f"{inv_id}_report.html", mime="text/html",
+                        file_name=f"{inv_id}_report.{ext}", mime=mime_type,
                     )
+                if not pdf_path.endswith(".pdf") and result.get("note"):
+                    st.info(result["note"])
 
 
 # ── Main ──────────────────────────────────────────────────────────────

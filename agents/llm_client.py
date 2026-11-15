@@ -79,18 +79,6 @@ class TinyAyaClient:
             self._client = cohere.ClientV2(api_key=self.api_key)
         return self._client
 
-    def get_available_models(self) -> Dict[str, str]:
-        """Return available model variants."""
-        return TINY_AYA_MODELS.copy()
-
-    def set_model(self, model: str):
-        """Change the active model."""
-        if model not in TINY_AYA_MODELS:
-            raise ValueError(
-                f"Model '{model}' not supported. Available models: {list(TINY_AYA_MODELS.keys())}"
-            )
-        self.model = model
-
     def validate_connection(self) -> Dict[str, Any]:
         """Validate API connection and return status."""
         try:
@@ -208,21 +196,24 @@ class TinyAyaClient:
         return cohere_messages
 
     def _convert_tools(self, tools: List[Dict]) -> List[Any]:
-        """Convert OpenAI-style tools to Cohere V2 format."""
+        """Convert serialized tool definitions to Cohere V2 format."""
         from cohere.types import ToolV2, ToolV2Function
 
         cohere_tools = []
         for tool in tools:
-            if tool.get("type") == "function":
-                func = tool.get("function", {})
-                cohere_tools.append(ToolV2(
-                    type="function",
-                    function=ToolV2Function(
-                        name=func.get("name"),
-                        description=func.get("description", ""),
-                        parameters=func.get("parameters", {}),
-                    )
-                ))
+            name = tool.get("name") or tool.get("function", {}).get("name")
+            desc = tool.get("description") or tool.get("function", {}).get("description", "")
+            params = tool.get("input_schema") or tool.get("function", {}).get("parameters", {})
+            if not name:
+                continue
+            cohere_tools.append(ToolV2(
+                type="function",
+                function=ToolV2Function(
+                    name=name,
+                    description=desc,
+                    parameters=params,
+                )
+            ))
         return cohere_tools
 
 
