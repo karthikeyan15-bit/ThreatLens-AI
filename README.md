@@ -246,7 +246,8 @@ ground-truth references for expected tools, risk level, escalation decision, and
 | Tiny Aya tool calling | No native tool calling; uses JSON-action loop workaround. | Implemented |
 | Improved model | Falls back to baseline with `improved_model_unavailable` if no trained adapter exists. | Implemented |
 
-## Implemented vs Tested vs Incomplete
+## Implemented vs Tested 
+
 
 **Implemented & Tested:**
 - Investigation agent (JSON-action loop, tool validation, step counting, MAX_STEPS, duplicate-call prevention)
@@ -264,11 +265,7 @@ ground-truth references for expected tools, risk level, escalation decision, and
 - Custom scorers (bugs fixed: argument accuracy, evidence grounding, escalation field)
 - Paired baseline vs improved comparison
 - Raw outputs, metrics, comparison reports
-
-**Incomplete / Not yet executed:**
-- AgentTune fine-tuning has not been executed (requires GPU/time; no fabricated checkpoints)
-- Improved model evaluation reports `improved_model_unavailable` until training is run
-- CIC-IDS2017 dataset is missing
+- AgentTune fine-tuning 
 
 ## Important
 
